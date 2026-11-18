@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
-const MAX_POLYLINE_POINTS = 8192;
-const MAX_MANEUVERS = 512;
-const MAX_TRAFFIC_SEGMENTS = 2048;
+export const MAX_POLYLINE_POINTS = 32768;
+export const MAX_MANEUVERS = 1024;
+export const MAX_TRAFFIC_SEGMENTS = 4096;
 
 export class AmapTransformError extends Error {
   constructor(code, message, { retryable = false } = {}) {
@@ -40,7 +40,9 @@ function parsePolyline(polyline) {
 
   const points = [];
   for (const encodedPoint of polyline.split(";")) {
-    const [longitudeText, latitudeText] = encodedPoint.trim().split(",");
+    const trimmed = encodedPoint.trim();
+    if (trimmed === "") continue;
+    const [longitudeText, latitudeText] = trimmed.split(",");
     const longitudeDeg = Number(longitudeText);
     const latitudeDeg = Number(latitudeText);
     if (
@@ -78,11 +80,18 @@ function appendPolyline(target, points) {
 
 function stepGeometry(step, stepDistanceM) {
   const polyline = parsePolyline(step.polyline);
-  if (polyline.length >= 2 || stepDistanceM === 0) return polyline;
+  if (
+    polyline.length >= 2 ||
+    stepDistanceM === 0 ||
+    (polyline.length === 1 && stepDistanceM <= 35)
+  ) {
+    return polyline;
+  }
 
   // Some responses omit the step-level geometry but still include it in every
-  // TMC. Recover only complete coverage: concatenating the available fragments
-  // would turn missing roads into a straight line or truncate the route.
+  // TMC. Recover only complete coverage: concatenating partial fragments would
+  // turn missing roads into a straight line or truncate the route, while tiny
+  // integer-metre rounding across dozens of TMCs on long highway legs is normal.
   const tmcs = Array.isArray(step.tmcs) ? step.tmcs : [];
   const recovered = [];
   let coveredDistanceM = 0;
@@ -90,11 +99,130 @@ function stepGeometry(step, stepDistanceM) {
     const distanceM = nonNegativeNumber(tmc.tmc_distance ?? tmc.distance);
     if (distanceM === 0) continue;
     const points = parsePolyline(tmc.tmc_polyline ?? tmc.polyline);
-    if (points.length < 2) return [];
+    if (points.length < 2 && !(points.length === 1 && distanceM <= 35)) {
+      return [];
+    }
     appendPolyline(recovered, points);
     coveredDistanceM += distanceM;
   }
-  return coveredDistanceM + 1 >= stepDistanceM ? recovered : [];
+  const toleranceM = Math.max(5, Math.min(80, tmcs.length * 1.5));
+  return coveredDistanceM + toleranceM >= stepDistanceM ? recovered : [];
+}
+
+function perpendicularDistanceMetres(point, start, end) {
+  const meanLatRad = ((start.latitude_deg + end.latitude_deg) * 0.5 * Math.PI) / 180;
+  const metersPerDegLat = 111_132.0;
+  const metersPerDegLon = 111_320.0 * Math.cos(meanLatRad);
+  const px = (point.longitude_deg - start.longitude_deg) * metersPerDegLon;
+  const py = (point.latitude_deg - start.latitude_deg) * metersPerDegLat;
+  const dx = (end.longitude_deg - start.longitude_deg) * metersPerDegLon;
+  const dy = (end.latitude_deg - start.latitude_deg) * metersPerDegLat;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq <= 1e-9) {
+    return Math.hypot(px, py);
+  }
+  const t = Math.min(1, Math.max(0, (px * dx + py * dy) / lengthSq));
+  return Math.hypot(px - t * dx, py - t * dy);
+}
+
+function simplifyDouglasPeucker(points, epsilonM) {
+  if (points.length <= 2) return points.slice();
+  const keep = new Uint8Array(points.length);
+  keep[0] = 1;
+  keep[points.length - 1] = 1;
+  const stack = [[0, points.length - 1]];
+
+  while (stack.length > 0) {
+    const [first, last] = stack.pop();
+    if (last - first <= 1) continue;
+    let maxDist = -1;
+    let split = -1;
+    for (let i = first + 1; i < last; i += 1) {
+      const dist = perpendicularDistanceMetres(points[i], points[first], points[last]);
+      if (dist > maxDist) {
+        maxDist = dist;
+        split = i;
+      }
+    }
+    if (maxDist > epsilonM && split !== -1) {
+      keep[split] = 1;
+      stack.push([first, split], [split, last]);
+    }
+  }
+
+  const simplified = [];
+  for (let i = 0; i < points.length; i += 1) {
+    if (keep[i]) simplified.push(points[i]);
+  }
+  return simplified;
+}
+
+export function simplifyPolylineToLimit(points, maximumPoints = MAX_POLYLINE_POINTS) {
+  if (points.length <= maximumPoints) return points;
+  let candidate = points;
+  for (const epsilonM of [2, 5, 10, 20, 40, 80, 160, 320]) {
+    candidate = simplifyDouglasPeucker(candidate, epsilonM);
+    if (candidate.length <= maximumPoints) return candidate;
+  }
+  const sampled = [candidate[0]];
+  const interiorSlots = Math.max(0, maximumPoints - 2);
+  for (let i = 1; i <= interiorSlots; i += 1) {
+    const index = Math.round((i * (candidate.length - 1)) / (interiorSlots + 1));
+    sampled.push(candidate[index]);
+  }
+  sampled.push(candidate.at(-1));
+  return sampled;
+}
+
+function compactManeuversToLimit(maneuvers, maximumManeuvers = MAX_MANEUVERS) {
+  if (maneuvers.length <= maximumManeuvers) return maneuvers;
+  const compacted = maneuvers.filter((maneuver, index) => {
+    if (index === 0 || index === maneuvers.length - 1) return true;
+    return maneuver.type !== "continue" && maneuver.type !== "unknown";
+  });
+  const bounded =
+    compacted.length <= maximumManeuvers
+      ? compacted
+      : [
+          ...compacted.slice(0, maximumManeuvers - 1),
+          compacted.at(-1),
+        ];
+  return bounded.map((maneuver, index) => ({ ...maneuver, id: index + 1 }));
+}
+
+const TRAFFIC_SEVERITY = {
+  unknown: 0,
+  free_flow: 1,
+  slow: 2,
+  congested: 3,
+  severe: 4,
+};
+
+function compactTrafficToLimit(traffic, maximumSegments = MAX_TRAFFIC_SEGMENTS) {
+  if (traffic.length <= maximumSegments) return traffic;
+  let current = traffic.map((segment) => ({ ...segment }));
+  while (current.length > maximumSegments) {
+    const next = [];
+    for (let i = 0; i < current.length; i += 2) {
+      const left = current[i];
+      const right = current[i + 1];
+      if (!right) {
+        next.push(left);
+        continue;
+      }
+      const dominantLevel =
+        (TRAFFIC_SEVERITY[right.level] ?? 0) > (TRAFFIC_SEVERITY[left.level] ?? 0)
+          ? right.level
+          : left.level;
+      next.push({
+        start_offset_m: left.start_offset_m,
+        end_offset_m: right.end_offset_m,
+        level: dominantLevel,
+      });
+    }
+    current = next;
+  }
+  return current;
 }
 
 export function mapAmapManeuver(action, assistantAction = "") {
@@ -149,16 +277,34 @@ function appendTraffic(target, segment) {
   target.push(segment);
 }
 
-function routeIdentifier(path, polyline, totalDistanceM, totalDurationS) {
+function routeIdentifier(path, polyline, totalDistanceM) {
   const providerId = compactText(path.path_id ?? path.pathid ?? path.id, 80);
   if (providerId) return `amap-${providerId}`.slice(0, 96);
 
+  // Exclude live duration from the fallback hash so periodic traffic refreshes
+  // keep a stable route_id for the exact same road geometry.
   const signature = JSON.stringify({
-    totalDistanceM,
-    totalDurationS,
+    totalDistanceM: Math.round(totalDistanceM),
     polyline,
   });
   return `amap-${createHash("sha256").update(signature).digest("hex").slice(0, 20)}`;
+}
+
+function detectHighwayAndElevated(steps, tollYuan) {
+  let hasHighway = tollYuan > 0;
+  let hasElevated = false;
+  for (const step of steps) {
+    const road = compactText(step.road_name ?? step.road, 96);
+    const instruction = compactText(step.instruction, 256);
+    const combined = `${road} ${instruction}`;
+    if (/高速|收费站|(?:^|[^A-Za-z0-9])[GS]\d{1,4}高速/.test(combined)) {
+      hasHighway = true;
+    }
+    if (/高架|快速路|内环|中环|立交主线/.test(combined)) {
+      hasElevated = true;
+    }
+  }
+  return { hasHighway, hasElevated };
 }
 
 function assertAmapSuccess(payload) {
@@ -178,10 +324,13 @@ function assertAmapSuccess(payload) {
 }
 
 /**
- * Converts an AMap Route Planning v2 driving response into protocol v1.
+ * Converts an AMap Route Planning v2 driving/motorcycle response into protocol v1.
  * No AMap field is allowed to escape this function.
  */
-export function transformAmapRouteV2(payload, { generatedAtMs = Date.now(), pathIndex = 0 } = {}) {
+export function transformAmapRouteV2(
+  payload,
+  { generatedAtMs = Date.now(), pathIndex = 0, routePreference } = {},
+) {
   assertAmapSuccess(payload);
   const paths = payload.route?.paths;
   if (!Array.isArray(paths) || !paths[pathIndex]) {
@@ -190,32 +339,29 @@ export function transformAmapRouteV2(payload, { generatedAtMs = Date.now(), path
 
   const path = paths[pathIndex];
   const steps = Array.isArray(path.steps) ? path.steps : [];
-  if (steps.length > MAX_MANEUVERS) {
-    throw new AmapTransformError("ROUTE_TOO_LARGE", "AMap route contains too many maneuvers");
-  }
 
-  const polyline = [];
-  const maneuvers = [];
-  const traffic = [];
+  const rawPolyline = [];
+  const rawManeuvers = [];
+  const rawTraffic = [];
   let routeOffsetM = 0;
   let missingStepGeometry = false;
 
   for (const [index, step] of steps.entries()) {
     const stepDistanceM = nonNegativeNumber(step.step_distance ?? step.distance);
     const stepPolyline = stepGeometry(step, stepDistanceM);
-    if (stepDistanceM > 0 && stepPolyline.length < 2) missingStepGeometry = true;
-    appendPolyline(polyline, stepPolyline);
+    const usableMicroStep = stepDistanceM <= 35 && (stepPolyline.length >= 1 || rawPolyline.length >= 1);
+    if (stepDistanceM > 0 && stepPolyline.length < 2 && !usableMicroStep) {
+      missingStepGeometry = true;
+    }
+    appendPolyline(rawPolyline, stepPolyline);
 
     const navi = step.navi && typeof step.navi === "object" ? step.navi : {};
     const action = navi.action ?? step.action ?? "";
     const assistantAction = navi.assistant_action ?? step.assistant_action ?? "";
 
     // AMap describes a step as "travel this step, then perform action".
-    // The maneuver therefore happens at the end of the step, not at its
-    // beginning. Recording the start offset made a freshly planned route show
-    // the first turn at 0 m and advanced every later instruction one road too
-    // early on the device.
-    maneuvers.push({
+    // The maneuver therefore happens at the end of the step, not at its beginning.
+    rawManeuvers.push({
       id: index + 1,
       type: mapAmapManeuver(action, assistantAction),
       route_offset_m: rounded(routeOffsetM + stepDistanceM),
@@ -229,7 +375,7 @@ export function transformAmapRouteV2(payload, { generatedAtMs = Date.now(), path
     for (const tmc of tmcs) {
       const segmentDistanceM = nonNegativeNumber(tmc.tmc_distance ?? tmc.distance);
       const endOffsetM = tmcOffsetM + segmentDistanceM;
-      appendTraffic(traffic, {
+      appendTraffic(rawTraffic, {
         start_offset_m: rounded(tmcOffsetM),
         end_offset_m: rounded(endOffsetM),
         level: mapAmapTrafficStatus(tmc.tmc_status ?? tmc.status),
@@ -240,7 +386,7 @@ export function transformAmapRouteV2(payload, { generatedAtMs = Date.now(), path
     routeOffsetM += stepDistanceM;
   }
 
-  if (missingStepGeometry || polyline.length < 2) {
+  if (missingStepGeometry || rawPolyline.length < 2) {
     const completePathPolyline = parsePolyline(path.polyline);
     if (completePathPolyline.length < 2 && missingStepGeometry) {
       throw new AmapTransformError(
@@ -249,17 +395,16 @@ export function transformAmapRouteV2(payload, { generatedAtMs = Date.now(), path
         { retryable: true },
       );
     }
-    // A complete path replaces the incomplete steps; appending it creates a
-    // jump from the last surviving fragment back to the route origin.
-    polyline.length = 0;
-    appendPolyline(polyline, completePathPolyline);
+    rawPolyline.length = 0;
+    appendPolyline(rawPolyline, completePathPolyline);
   }
-  if (polyline.length < 2) {
+  if (rawPolyline.length < 2) {
     throw new AmapTransformError("INVALID_POLYLINE", "AMap route has fewer than two points");
   }
-  if (polyline.length > MAX_POLYLINE_POINTS || traffic.length > MAX_TRAFFIC_SEGMENTS) {
-    throw new AmapTransformError("ROUTE_TOO_LARGE", "AMap route exceeds protocol v1 limits");
-  }
+
+  const polyline = simplifyPolylineToLimit(rawPolyline, MAX_POLYLINE_POINTS);
+  const maneuvers = compactManeuversToLimit(rawManeuvers, MAX_MANEUVERS);
+  const traffic = compactTrafficToLimit(rawTraffic, MAX_TRAFFIC_SEGMENTS);
 
   const totalDistanceM = nonNegativeNumber(path.distance, routeOffsetM) || routeOffsetM;
   const durationCandidate = path.cost?.duration ?? path.duration;
@@ -269,29 +414,39 @@ export function transformAmapRouteV2(payload, { generatedAtMs = Date.now(), path
   );
   const totalDurationS = Math.round(nonNegativeNumber(durationCandidate, stepDurationS));
   const integerGeneratedAtMs = Math.max(0, Math.trunc(finiteNumber(generatedAtMs)));
+  const tollYuan = rounded(nonNegativeNumber(path.cost?.tolls ?? path.tolls), 2);
+  const { hasHighway, hasElevated } = detectHighwayAndElevated(steps, tollYuan);
+  const restrictionActive = String(path.restriction ?? "0") === "1";
 
-  return {
+  const bundle = {
     schema_version: 1,
-    route_id: routeIdentifier(path, polyline, totalDistanceM, totalDurationS),
+    route_id: routeIdentifier(path, polyline, totalDistanceM),
     provider: "amap",
     coordinate_system: "GCJ-02",
     generated_at_ms: integerGeneratedAtMs,
     total_distance_m: rounded(totalDistanceM),
     total_duration_s: totalDurationS,
+    has_highway: hasHighway,
+    has_elevated: hasElevated,
+    toll_yuan: tollYuan,
+    restriction_active: restrictionActive,
     polyline,
     maneuvers,
     traffic,
   };
+  if (routePreference) {
+    bundle.route_preference = routePreference;
+  }
+  return bundle;
 }
 
 /**
- * Converts every usable AMap candidate returned by the multi-route strategy.
- * The phone uses this envelope only for preview/selection; the selected
- * RouteBundle continues through the unchanged navigation protocol.
+ * Converts up to three usable AMap candidates returned by the multi-route strategy.
+ * One malformed or oversized alternative never discards sibling candidates.
  */
 export function transformAmapRouteOptionsV2(
   payload,
-  { generatedAtMs = Date.now(), maximumRoutes = 3 } = {},
+  { generatedAtMs = Date.now(), maximumRoutes = 3, routePreference } = {},
 ) {
   assertAmapSuccess(payload);
   const paths = payload.route?.paths;
@@ -299,8 +454,29 @@ export function transformAmapRouteOptionsV2(
     throw new AmapTransformError("NO_ROUTE", "AMap returned no usable driving path");
   }
 
-  const count = Math.min(Math.max(1, Math.trunc(maximumRoutes)), 3, paths.length);
-  return Array.from({ length: count }, (_, pathIndex) =>
-    transformAmapRouteV2(payload, { generatedAtMs, pathIndex }),
-  );
+  const limit = Math.min(Math.max(1, Math.trunc(maximumRoutes)), 3);
+  const routes = [];
+  const seenIds = new Set();
+  let firstError = null;
+
+  for (let pathIndex = 0; pathIndex < paths.length && routes.length < limit; pathIndex += 1) {
+    try {
+      const candidate = transformAmapRouteV2(payload, {
+        generatedAtMs,
+        pathIndex,
+        routePreference,
+      });
+      if (!seenIds.has(candidate.route_id)) {
+        seenIds.add(candidate.route_id);
+        routes.push(candidate);
+      }
+    } catch (error) {
+      firstError ??= error;
+    }
+  }
+
+  if (routes.length === 0) {
+    throw firstError ?? new AmapTransformError("NO_ROUTE", "AMap returned no usable driving path");
+  }
+  return routes;
 }

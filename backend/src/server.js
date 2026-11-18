@@ -5,8 +5,9 @@ import { setDefaultAutoSelectFamily } from "node:net";
 import { createAmapProvider } from "./amap-provider.js";
 import { createAmapPlacesProvider } from "./amap-places.js";
 import { createAmapCitiesProvider } from "./amap-cities.js";
+import { createFixtureNavigationProvider } from "./fixture-catalog.js";
+import { createAutoProvider, createGoogleProvider } from "./google-provider.js";
 import { createMapTileProvider } from "./map-tiles.js";
-import { transformAmapRouteOptionsV2, transformAmapRouteV2 } from "./amap-transformer.js";
 import { createGateway } from "./gateway.js";
 
 // restapi.amap.com publishes AAAA records, and an overseas VPS often has no
@@ -16,29 +17,9 @@ import { createGateway } from "./gateway.js";
 setDefaultAutoSelectFamily(false);
 setDefaultResultOrder("ipv4first");
 
-async function createFixtureProvider() {
-  const fixtureUrl = new URL("../fixtures/amap-route-v2.json", import.meta.url);
-  const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
-  return {
-    async planRoute() {
-      return transformAmapRouteV2(fixture, { generatedAtMs: Date.now() });
-    },
-    async planRouteOptions() {
-      return transformAmapRouteOptionsV2(fixture, { generatedAtMs: Date.now() });
-    },
-    async searchPlaces(query) {
-      return {
-        protocol_version: 1,
-        query: query.keywords,
-        places: [],
-      };
-    },
-  };
-}
-
 function createDisabledProvider() {
   const unavailable = () => {
-    const error = new Error("AMap live navigation is not configured");
+    const error = new Error("Live navigation provider is not configured");
     error.code = "SERVER_MISCONFIGURED";
     error.retryable = false;
     throw error;
@@ -56,42 +37,103 @@ function createDisabledProvider() {
   };
 }
 
+function buildAmapSuite(env) {
+  const key = env.AMAP_WEB_SERVICE_KEY;
+  if (typeof key !== "string" || key.trim() === "") {
+    return null;
+  }
+  return {
+    ...createAmapProvider({
+      key,
+      enableMotorcycleApi: env.AMAP_ENABLE_MOTORCYCLE_API === "true",
+      motorcyclePlate: env.AMAP_DEFAULT_PLATE ?? "",
+      motorcycleType: env.AMAP_MOTORCYCLE_TYPE ?? "",
+    }),
+    ...createAmapPlacesProvider({ key }),
+    ...createAmapCitiesProvider({ key }),
+  };
+}
+
+function buildGoogleSuite(env) {
+  const key = env.GOOGLE_MAPS_API_KEY;
+  if (typeof key !== "string" || key.trim() === "") {
+    return null;
+  }
+  return createGoogleProvider({
+    key,
+    travelMode: env.GOOGLE_TRAVEL_MODE ?? "TWO_WHEELER",
+    trafficAware: env.GOOGLE_TRAFFIC_AWARE !== "false",
+  });
+}
+
 async function main() {
   const providerMode = process.env.MOTO_PROVIDER ?? "fixture";
   let provider;
+  let routeTrafficEnabled;
+
   if (providerMode === "amap") {
-    const key = process.env.AMAP_WEB_SERVICE_KEY;
-    if (typeof key !== "string" || key.trim() === "") {
+    provider = buildAmapSuite(process.env);
+    if (!provider) {
       throw new Error("AMAP_WEB_SERVICE_KEY is required when MOTO_PROVIDER=amap");
     }
-    provider = {
-      ...createAmapProvider({ key }),
-      ...createAmapPlacesProvider({ key }),
-      ...createAmapCitiesProvider({ key }),
-    };
+    routeTrafficEnabled = true;
+  } else if (providerMode === "google") {
+    provider = buildGoogleSuite(process.env);
+    if (!provider) {
+      throw new Error("GOOGLE_MAPS_API_KEY is required when MOTO_PROVIDER=google");
+    }
+    routeTrafficEnabled = process.env.GOOGLE_TRAFFIC_REFRESH_ENABLED === "true";
+  } else if (providerMode === "auto") {
+    const amap = buildAmapSuite(process.env);
+    const google = buildGoogleSuite(process.env);
+    if (!amap && !google) {
+      throw new Error(
+        "At least one of AMAP_WEB_SERVICE_KEY or GOOGLE_MAPS_API_KEY is required when MOTO_PROVIDER=auto",
+      );
+    }
+    provider = createAutoProvider({ amap, google });
+    routeTrafficEnabled = Boolean(amap) || process.env.GOOGLE_TRAFFIC_REFRESH_ENABLED === "true";
   } else if (providerMode === "fixture") {
-    provider = await createFixtureProvider();
+    const fixtureUrl = new URL("../fixtures/amap-route-v2.json", import.meta.url);
+    const fixture = JSON.parse(await readFile(fixtureUrl, "utf8"));
+    provider = createFixtureNavigationProvider(fixture);
+    routeTrafficEnabled = false;
   } else if (providerMode === "disabled") {
     provider = createDisabledProvider();
+    routeTrafficEnabled = false;
   } else {
     throw new Error(`unsupported MOTO_PROVIDER: ${providerMode}`);
   }
+
   const port = Number(process.env.PORT ?? 8787);
-  const allowedOrigin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
+  const host = process.env.HOST ?? "127.0.0.1";
+  const allowedOrigin = process.env.WEB_ORIGIN ?? "http://localhost:5173,http://127.0.0.1:4173,http://localhost:4173";
+  const liveMode = providerMode === "amap" || providerMode === "google" || providerMode === "auto";
   const mapProvider = createMapTileProvider({
-    url: process.env.MOTO_MAP_PMTILES_URL ?? (providerMode === "amap" ? "auto" : "disabled"),
+    url: process.env.MOTO_MAP_PMTILES_URL ?? (liveMode ? "auto" : "disabled"),
     cacheDirectory: process.env.MOTO_MAP_CACHE_DIR,
-    maximumCacheBytes: process.env.MOTO_MAP_CACHE_MAX_BYTES === undefined
-      ? undefined : Number(process.env.MOTO_MAP_CACHE_MAX_BYTES),
+    maximumCacheBytes:
+      process.env.MOTO_MAP_CACHE_MAX_BYTES === undefined
+        ? undefined
+        : Number(process.env.MOTO_MAP_CACHE_MAX_BYTES),
   });
   await mapProvider?.initialize();
-  const server = createGateway({ provider, mapProvider, allowedOrigin, providerMode });
-
-  server.listen(port, "127.0.0.1", () => {
-    console.log(`MOTO GPS gateway listening on http://127.0.0.1:${port} (${providerMode})`);
+  const server = createGateway({
+    provider,
+    mapProvider,
+    allowedOrigin,
+    providerMode,
+    routeTrafficEnabled,
   });
 
-  const close = () => { mapProvider?.close(); server.close(); };
+  server.listen(port, host, () => {
+    console.log(`MOTO GPS gateway listening on http://${host}:${port} (${providerMode})`);
+  });
+
+  const close = () => {
+    mapProvider?.close();
+    server.close();
+  };
   process.once("SIGINT", close);
   process.once("SIGTERM", close);
 }

@@ -23,6 +23,17 @@ test("converts a mainland WGS84 point at the explicit provider boundary", () => 
 
 test("leaves coordinates outside GCJ-02 coverage numerically unchanged", () => {
   assert.equal(isOutsideGcj02Coverage(2.3522, 48.8566), true);
+  // Japan (Osaka), South Korea (Seoul), Taiwan (Taipei), and Vietnam (Hanoi) must NOT receive GCJ-02 shift.
+  assert.equal(isOutsideGcj02Coverage(135.5023, 34.6937), true);
+  assert.equal(isOutsideGcj02Coverage(126.978, 37.5665), true);
+  assert.equal(isOutsideGcj02Coverage(121.5654, 25.033), true);
+  assert.equal(isOutsideGcj02Coverage(105.8342, 21.0278), true);
+  // Mainland China cities (Jinan, Linyi, Harbin, Sanya, Kashgar) remain inside GCJ-02 coverage.
+  assert.equal(isOutsideGcj02Coverage(117.1201, 36.6512), false);
+  assert.equal(isOutsideGcj02Coverage(118.3564, 35.1047), false);
+  assert.equal(isOutsideGcj02Coverage(126.535, 45.8038), false);
+  assert.equal(isOutsideGcj02Coverage(109.5119, 18.2528), false);
+  assert.equal(isOutsideGcj02Coverage(75.9898, 39.4704), false);
   assert.deepEqual(
     wgs84ToGcj02({ longitude_deg: 2.3522, latitude_deg: 48.8566 }),
     {

@@ -149,17 +149,37 @@ export function createGateway({
   allowedOrigin = "http://localhost:5173",
   maximumBodyBytes = DEFAULT_MAX_BODY_BYTES,
   providerMode = "fixture",
+  routeTrafficEnabled,
 } = {}) {
   if (!provider || typeof provider.planRoute !== "function") {
     throw new TypeError("provider.planRoute is required");
   }
   const rateLimit = createRateLimiter();
+  const liveProvider =
+    providerMode === "amap" || providerMode === "google" || providerMode === "auto";
+  const hasRouteTraffic =
+    typeof routeTrafficEnabled === "boolean"
+      ? routeTrafficEnabled
+      : providerMode === "amap" || providerMode === "auto";
+
+  const resolveAllowedOrigin = (request) => {
+    if (!allowedOrigin) return "";
+    if (allowedOrigin === "*") return "*";
+    const candidates = String(allowedOrigin)
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (candidates.length <= 1) return candidates[0] ?? "";
+    const requestOrigin = String(request.headers.origin ?? "").trim();
+    return candidates.includes(requestOrigin) ? requestOrigin : candidates[0];
+  };
 
   return createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? "/", "http://gateway.local");
+    const responseOrigin = resolveAllowedOrigin(request);
 
     if (request.method === "OPTIONS") {
-      setCommonHeaders(response, allowedOrigin);
+      setCommonHeaders(response, responseOrigin);
       response.statusCode = 204;
       response.end();
       return;
@@ -171,13 +191,13 @@ export function createGateway({
         200,
         {
           status: "ok",
-          ready_for_live_navigation: providerMode === "amap",
+          ready_for_live_navigation: liveProvider,
           provider: providerMode,
           capabilities: {
-            route_planning: providerMode === "amap",
-            route_traffic: providerMode === "amap",
-            // Route Planning v2 exposes neither legal road speed limits nor
-            // live signal phases. API readiness must not imply those feeds.
+            route_planning: liveProvider,
+            route_traffic: hasRouteTraffic,
+            // Route Planning v2 / Routes v2 expose neither legal road speed limits
+            // nor live signal phases in this tier.
             road_speed_limits: false,
             traffic_light_countdown: false,
             surrounding_map: typeof mapProvider?.getTile === "function",
@@ -185,7 +205,7 @@ export function createGateway({
           },
           map_source: mapProvider?.status?.() ?? { enabled: false },
         },
-        allowedOrigin,
+        responseOrigin,
       );
       return;
     }
@@ -197,7 +217,7 @@ export function createGateway({
         response.setHeader("Retry-After", "60");
         sendJson(response, 429, { protocol_version: 1, error: {
           code: "RATE_LIMITED", message: "too many map requests", retryable: true,
-        } }, allowedOrigin);
+        } }, responseOrigin);
         return;
       }
       try {
@@ -218,12 +238,12 @@ export function createGateway({
           if (typeof provider.searchCities !== "function") throw new BodyReadError("SERVER_MISCONFIGURED", "city search is unavailable");
           result = await provider.searchCities({ keywords });
         }
-        sendJson(response, 200, result, allowedOrigin);
+        sendJson(response, 200, result, responseOrigin);
       } catch (error) {
         const publicError = safeError(error);
         if (publicError.code === "MAP_BUSY") response.setHeader("Retry-After", "5");
         sendJson(response, publicError.code === "INVALID_REQUEST" ? 400 : 503,
-          { protocol_version: 1, error: publicError }, allowedOrigin);
+          { protocol_version: 1, error: publicError }, responseOrigin);
       }
       return;
     }
@@ -235,7 +255,7 @@ export function createGateway({
           response,
           429,
           { protocol_version: 1, error: { code: "RATE_LIMITED", message: "too many place searches", retryable: true } },
-          allowedOrigin,
+          responseOrigin,
         );
         return;
       }
@@ -247,21 +267,21 @@ export function createGateway({
             protocol_version: 1,
             error: { code: "SERVER_MISCONFIGURED", message: "place search is unavailable", retryable: false },
           },
-          allowedOrigin,
+          responseOrigin,
         );
         return;
       }
       try {
         const query = validatePlaceQuery(requestUrl);
         const result = await provider.searchPlaces(query);
-        sendJson(response, 200, result, allowedOrigin);
+        sendJson(response, 200, result, responseOrigin);
       } catch (error) {
         const publicError = safeError(error);
         sendJson(
           response,
           publicError.code === "INVALID_REQUEST" ? 400 : 503,
           { protocol_version: 1, error: publicError },
-          allowedOrigin,
+          responseOrigin,
         );
       }
       return;
@@ -279,7 +299,7 @@ export function createGateway({
           request_id: null,
           error: { code: "NOT_FOUND", message: "endpoint not found", retryable: false },
         },
-        allowedOrigin,
+        responseOrigin,
       );
       return;
     }
@@ -294,7 +314,7 @@ export function createGateway({
           request_id: null,
           error: { code: "RATE_LIMITED", message: "too many route requests", retryable: true },
         },
-        allowedOrigin,
+        responseOrigin,
       );
       return;
     }
@@ -311,7 +331,7 @@ export function createGateway({
           response,
           200,
           { protocol_version: 1, request_id: body.request_id, routes: routes.slice(0, 3) },
-          allowedOrigin,
+          responseOrigin,
         );
       } else {
         const route = await provider.planRoute(body);
@@ -319,7 +339,7 @@ export function createGateway({
           response,
           200,
           { protocol_version: 1, request_id: body.request_id, route },
-          allowedOrigin,
+          responseOrigin,
         );
       }
     } catch (error) {
@@ -331,7 +351,7 @@ export function createGateway({
         response,
         clientError ? 400 : 503,
         { protocol_version: 1, request_id: requestIdFrom(body), error: publicError },
-        allowedOrigin,
+        responseOrigin,
       );
     }
   });

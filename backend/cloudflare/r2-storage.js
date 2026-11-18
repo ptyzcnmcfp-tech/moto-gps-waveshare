@@ -24,7 +24,8 @@ export function createR2Storage(bucket) {
       try {
         const value = await readJson(bucket, `tiles/${name}`, MAXIMUM_TILE_BYTES);
         if (!value) return null;
-        if (value.schema_version !== 1 || value.coordinate_system !== "GCJ-02" ||
+        if (value.schema_version !== 1 ||
+            (value.coordinate_system !== "GCJ-02" && value.coordinate_system !== "WGS84") ||
             value.tile?.z !== z || value.tile?.x !== x || value.tile?.y !== y ||
             !Array.isArray(value.roads) || !Array.isArray(value.buildings) ||
             !Number.isFinite(Date.parse(value.source?.retrieved_at)) ||

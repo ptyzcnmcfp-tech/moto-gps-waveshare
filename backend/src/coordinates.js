@@ -57,12 +57,55 @@ function transformLongitude(longitudeOffset, latitudeOffset) {
 }
 
 export function isOutsideGcj02Coverage(longitudeDeg, latitudeDeg) {
-  return (
-    longitudeDeg < 72.004 ||
-    longitudeDeg > 137.8347 ||
-    latitudeDeg < 0.8293 ||
-    latitudeDeg > 55.8271
-  );
+  if (
+    longitudeDeg < 73.5 ||
+    longitudeDeg > 135.1 ||
+    latitudeDeg < 18.1 ||
+    latitudeDeg > 53.6
+  ) {
+    return true;
+  }
+  // Korean Peninsula, Jeju, Kyushu, Honshu (Osaka/Kyoto/Nagoya), and Okinawa.
+  if (longitudeDeg >= 124.5 && latitudeDeg >= 32.5 && latitudeDeg <= 39.2) {
+    return true;
+  }
+  if (longitudeDeg >= 126.0 && latitudeDeg >= 31.0 && latitudeDeg < 32.5) {
+    return true;
+  }
+  if (longitudeDeg >= 122.9 && latitudeDeg >= 24.0 && latitudeDeg < 31.0) {
+    return true;
+  }
+  // Taiwan & Penghu use WGS84 / TWD97, never GCJ-02.
+  if (
+    longitudeDeg >= 119.3 &&
+    longitudeDeg <= 122.2 &&
+    latitudeDeg >= 21.8 &&
+    latitudeDeg <= 25.4
+  ) {
+    return true;
+  }
+  // Northern Vietnam / Laos / Thailand & South China Sea outside Hainan.
+  if (longitudeDeg <= 108.05 && latitudeDeg <= 21.45) {
+    return true;
+  }
+  if (longitudeDeg >= 109.4 && longitudeDeg <= 122.9 && latitudeDeg < 18.15) {
+    return true;
+  }
+  return false;
+}
+
+export function isMainlandChinaGcj02(longitudeDeg, latitudeDeg) {
+  // Hong Kong and Macau SARs use GCJ-02 inside AMap Web Service, whereas
+  // Google Maps / international routing uses WGS84 in HK/Macau as well as overseas.
+  if (
+    longitudeDeg >= 113.5 &&
+    longitudeDeg <= 114.5 &&
+    latitudeDeg >= 22.05 &&
+    latitudeDeg <= 22.56
+  ) {
+    return false;
+  }
+  return !isOutsideGcj02Coverage(longitudeDeg, latitudeDeg);
 }
 
 function roundedCoordinate(value) {

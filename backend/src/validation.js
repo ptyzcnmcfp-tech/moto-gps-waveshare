@@ -7,8 +7,10 @@ const REQUEST_KEYS = new Set([
   "is_reroute",
   "previous_route_id",
   "destination_poi_id",
+  "route_preference",
 ]);
 const POINT_KEYS = new Set(["coordinate_system", "longitude_deg", "latitude_deg"]);
+const ROUTE_PREFERENCES = new Set(["default", "avoid_highway", "less_tolls", "fastest"]);
 
 export class ProtocolValidationError extends Error {
   constructor(message) {
@@ -93,6 +95,11 @@ export function validateRouteRequest(value) {
     ) {
       throw new ProtocolValidationError("destination_poi_id must contain 1 to 64 characters");
     }
+  }
+  if (value.route_preference !== undefined && !ROUTE_PREFERENCES.has(value.route_preference)) {
+    throw new ProtocolValidationError(
+      "route_preference must be one of default, avoid_highway, less_tolls, fastest",
+    );
   }
   validateWgs84Point(value.origin, "origin");
   validateWgs84Point(value.destination, "destination");

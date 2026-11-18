@@ -66,7 +66,8 @@ export class MapDiskCache {
     try {
       if (entry.bytes > MAXIMUM_TILE_BYTES) throw new Error("oversized cached tile");
       const value = JSON.parse(await readFile(join(this.directory, name), "utf8"));
-      if (value.schema_version !== 1 || value.coordinate_system !== "GCJ-02" ||
+      if (value.schema_version !== 1 ||
+          (value.coordinate_system !== "GCJ-02" && value.coordinate_system !== "WGS84") ||
           value.tile?.z !== z || value.tile?.x !== x || value.tile?.y !== y ||
           !Array.isArray(value.roads) || !Array.isArray(value.buildings) ||
           typeof value.source?.retrieved_at !== "string" || !value.source?.source_revision) {

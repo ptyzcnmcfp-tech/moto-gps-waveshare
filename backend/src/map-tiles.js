@@ -7,7 +7,7 @@ import { Compression, EtagMismatch, PMTiles, SharedPromiseCache, TileType } from
 import { VectorTile } from "@mapbox/vector-tile";
 import { PbfReader } from "pbf";
 
-import { wgs84ToGcj02 } from "./coordinates.js";
+import { isOutsideGcj02Coverage, wgs84ToGcj02 } from "./coordinates.js";
 import { MapDiskCache, MAXIMUM_TILE_BYTES } from "./map-cache.js";
 import { createSemaphore, readLimitedBody } from "./map-http.js";
 
@@ -52,11 +52,16 @@ function roadClass(detail) {
 
 export function transformVectorTile(data, { z, x, y, revision, retrievedAt = new Date().toISOString() }) {
   validateTileCoordinates(z, x, y);
+  const bboxWgs84 = tileBoundsWgs84(z, x, y);
+  const outsideGcj02 = isOutsideGcj02Coverage(
+    (bboxWgs84[0] + bboxWgs84[2]) * 0.5,
+    (bboxWgs84[1] + bboxWgs84[3]) * 0.5,
+  );
   const result = {
-    schema_version: 1, coordinate_system: "GCJ-02", tile: { z, x, y }, roads: [], buildings: [],
+    schema_version: 1, coordinate_system: outsideGcj02 ? "WGS84" : "GCJ-02", tile: { z, x, y }, roads: [], buildings: [],
     source: { provider: "protomaps-openstreetmap", licence: "ODbL-1.0",
       attribution_url: "https://www.openstreetmap.org/copyright", retrieved_at: retrievedAt,
-      source_revision: revision, bbox_wgs84: tileBoundsWgs84(z, x, y) },
+      source_revision: revision, bbox_wgs84: bboxWgs84 },
   };
   if (!data) return result;
   if (data.byteLength > MAXIMUM_TILE_BYTES) throw new MapTileError("MAP_TILE_TOO_LARGE", "map tile exceeds decode limit");

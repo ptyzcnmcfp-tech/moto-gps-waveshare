@@ -23,6 +23,63 @@ function compactText(value, maximumLength) {
   return String(value ?? "").trim().slice(0, maximumLength);
 }
 
+function normalizeMatchToken(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[\s·\-()（）[\]【】.,，。/\\]+/g, "");
+}
+
+function placeMatchScore(place, normalizedKeywords) {
+  if (!normalizedKeywords) return 1;
+  const normalizedName = normalizeMatchToken(place.name);
+  const normalizedAreaName = normalizeMatchToken(`${place.city}${place.district}${place.name}`);
+  if (normalizedName === normalizedKeywords) return 4;
+  if (normalizedName.startsWith(normalizedKeywords)) return 3;
+  if (normalizedName.includes(normalizedKeywords)) return 2;
+  if (normalizedAreaName.includes(normalizedKeywords)) return 2;
+  return 0;
+}
+
+export function hasStrongKeywordMatch(places, keywords) {
+  const normalizedKeywords = normalizeMatchToken(keywords);
+  if (!normalizedKeywords) return places.length > 0;
+  return places.some((place) => placeMatchScore(place, normalizedKeywords) >= 2);
+}
+
+function mergeNearbyAndNationwidePlaces(nearbyPlaces, nationwidePlaces, keywords) {
+  const normalizedKeywords = normalizeMatchToken(keywords);
+  const combined = [];
+  const seenKeys = new Set();
+
+  const pushUnique = (place, fromNearby) => {
+    const key =
+      place.id ||
+      `${place.name}:${place.location.longitude_deg.toFixed(5)},${place.location.latitude_deg.toFixed(5)}`;
+    if (seenKeys.has(key)) return;
+    seenKeys.add(key);
+    combined.push({
+      place,
+      score: placeMatchScore(place, normalizedKeywords),
+      fromNearby,
+      order: combined.length,
+    });
+  };
+
+  for (const place of nationwidePlaces) pushUnique(place, false);
+  for (const place of nearbyPlaces) pushUnique(place, true);
+
+  combined.sort((left, right) => {
+    const leftStrong = left.score >= 2 ? 1 : 0;
+    const rightStrong = right.score >= 2 ? 1 : 0;
+    if (leftStrong !== rightStrong) return rightStrong - leftStrong;
+    if (left.score !== right.score) return right.score - left.score;
+    if (left.fromNearby !== right.fromNearby) return left.fromNearby ? -1 : 1;
+    return left.order - right.order;
+  });
+
+  return combined.slice(0, MAX_RESULTS).map((entry) => entry.place);
+}
+
 function parseGcj02Location(value) {
   const [longitudeText, latitudeText] = String(value ?? "").split(",");
   const longitudeDeg = Number(longitudeText);
@@ -127,8 +184,6 @@ export function buildAmapPlacesUrl(
       `${gcj02Origin.longitude_deg.toFixed(6)},${gcj02Origin.latitude_deg.toFixed(6)}`,
     );
     url.searchParams.set("radius", String(NEARBY_RADIUS_M));
-    // AMap's weight mode combines keyword relevance with proximity. Pure
-    // distance order is wrong for navigation searches such as "奥体中心".
     url.searchParams.set("sortrule", "weight");
   }
   const region = compactText(query?.region, 32);
@@ -174,7 +229,7 @@ export function createAmapPlacesProvider({
   fetchImpl = globalThis.fetch,
   endpoint = DEFAULT_TEXT_ENDPOINT,
   aroundEndpoint = DEFAULT_AROUND_ENDPOINT,
-  timeoutMs = 6000,
+  timeoutMs = 8000,
   maxAttempts = 3,
   retryDelayMs = 100,
 } = {}) {
@@ -225,14 +280,31 @@ export function createAmapPlacesProvider({
       const nearbyUrl = buildAmapPlacesUrl(query, { key, endpoint, aroundEndpoint });
       const nearbyPayload = await fetchPayload(nearbyUrl);
       const nearbyResult = transformAmapPlaces(nearbyPayload, query);
-      if (!query?.origin || nearbyResult.places.length > 0) return nearbyResult;
+      if (!query?.origin || hasStrongKeywordMatch(nearbyResult.places, query?.keywords)) {
+        return nearbyResult;
+      }
 
-      // Around search is intentionally bounded to the rider's local area. If
-      // it finds nothing, retain normal navigation behaviour by falling back
-      // to the original nationwide/region-biased text search.
+      // Cross-city queries (e.g. searching "济南西站" while riding in Linyi) often
+      // return either zero 50 km results or weak local partial matches ("西站便利店").
+      // Supplement with nationwide text search so exact intercity destinations rank first.
       const textUrl = buildAmapPlacesUrl({ ...query, origin: undefined }, { key, endpoint });
-      const textPayload = await fetchPayload(textUrl);
-      return transformAmapPlaces(textPayload, query);
+      try {
+        const textPayload = await fetchPayload(textUrl);
+        const textResult = transformAmapPlaces(textPayload, query);
+        if (nearbyResult.places.length === 0) return textResult;
+        return {
+          protocol_version: 1,
+          query: nearbyResult.query,
+          places: mergeNearbyAndNationwidePlaces(
+            nearbyResult.places,
+            textResult.places,
+            query?.keywords,
+          ),
+        };
+      } catch (error) {
+        if (nearbyResult.places.length > 0) return nearbyResult;
+        throw error;
+      }
     },
   };
 }

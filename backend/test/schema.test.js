@@ -14,11 +14,22 @@ test("protocol schemas are versioned and make coordinate systems explicit", asyn
 
   assert.equal(requestSchema.properties.protocol_version.const, 1);
   assert.equal(requestSchema.$defs.wgs84Point.properties.coordinate_system.const, "WGS84");
+  assert.deepEqual(requestSchema.properties.route_preference.enum, [
+    "default",
+    "avoid_highway",
+    "less_tolls",
+    "fastest",
+  ]);
   assert.equal(bundleSchema.properties.protocol_version.const, 1);
-  assert.equal(
-    bundleSchema.$defs.routeBundle.properties.coordinate_system.const,
-    "GCJ-02",
+  assert.deepEqual(
+    bundleSchema.$defs.routeBundle.properties.coordinate_system.enum,
+    ["GCJ-02", "WGS84"],
   );
+  assert.deepEqual(
+    bundleSchema.$defs.routeBundle.properties.provider.enum,
+    ["amap", "google"],
+  );
+  assert.equal(bundleSchema.$defs.routeBundle.properties.polyline.maxItems, 32768);
   assert.ok(bundleSchema.required.includes("request_id"));
   assert.equal(optionsSchema.properties.protocol_version.const, 1);
   assert.equal(optionsSchema.properties.routes.maxItems, 3);

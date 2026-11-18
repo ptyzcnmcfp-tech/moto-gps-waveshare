@@ -198,3 +198,55 @@ test("does not retry POI HTTP or AMap business errors", async (t) => {
     assert.equal(calls, 1);
   });
 });
+
+test("supplements weak local partial POI hits with nationwide text search for cross-city queries", async () => {
+  const requests = [];
+  const provider = createAmapPlacesProvider({
+    key: "test-only-placeholder",
+    endpoint: "https://provider.test/v5/place/text",
+    aroundEndpoint: "https://provider.test/v5/place/around",
+    fetchImpl: async (url) => {
+      requests.push(url);
+      const payload =
+        url.pathname === "/v5/place/around"
+          ? {
+              status: "1",
+              pois: [
+                {
+                  id: "LINYI-LOCAL-1",
+                  name: "西站超市",
+                  location: "118.340000,35.090000",
+                  cityname: "临沂市",
+                  adname: "兰山区",
+                },
+              ],
+            }
+          : {
+              status: "1",
+              pois: [
+                {
+                  id: "JINAN-WEST-1",
+                  name: "济南西站",
+                  location: "116.897500,36.670500",
+                  cityname: "济南市",
+                  adname: "槐荫区",
+                },
+              ],
+            };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+
+  const result = await provider.searchPlaces({
+    keywords: "济南西站",
+    origin: { coordinate_system: "WGS84", longitude_deg: 118.3564, latitude_deg: 35.1047 },
+  });
+
+  assert.equal(requests.length, 2);
+  assert.equal(result.places[0].id, "JINAN-WEST-1");
+  assert.equal(result.places[0].name, "济南西站");
+  assert.equal(result.places[1].id, "LINYI-LOCAL-1");
+});

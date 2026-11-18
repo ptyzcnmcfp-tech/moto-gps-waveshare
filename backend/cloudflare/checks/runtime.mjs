@@ -225,3 +225,45 @@ test("concurrent uncached map requests own their I/O and persist valid tiles", a
   const bucket = await mf.getR2Bucket("MAP_CACHE");
   assert.ok((await (await bucket.get(tileKey(sourceUrl))).json()).roads.length > 0);
 });
+
+test("google mode serves WGS84 overseas routes without exposing API key", async (t) => {
+  const mf = await runtime(
+    t,
+    { MOTO_PROVIDER: "google", GOOGLE_MAPS_API_KEY: "secret-google-key", MOTO_MAP_PMTILES_URL: "disabled" },
+    async (request) => {
+      const url = new URL(request.url);
+      assert.equal(url.hostname, "routes.googleapis.com");
+      assert.equal(request.headers.get("X-Goog-Api-Key"), "secret-google-key");
+      return Response.json({
+        routes: [
+          {
+            distanceMeters: 3100,
+            duration: "420s",
+            polyline: { encodedPolyline: "_p~iF~ps|U_ulLnnqC_mqNvxq`@" },
+            legs: [{ steps: [{ distanceMeters: 3100, navigationInstruction: { maneuver: "STRAIGHT", instructions: "Continue" } }] }],
+          },
+        ],
+      });
+    },
+  );
+  const response = await requestRoute(
+    mf,
+    "/v1/routes",
+    JSON.stringify({
+      protocol_version: 1,
+      request_id: 88,
+      route_mode: "driving",
+      route_preference: "avoid_highway",
+      is_reroute: false,
+      origin: { coordinate_system: "WGS84", longitude_deg: 135.5023, latitude_deg: 34.6937 },
+      destination: { coordinate_system: "WGS84", longitude_deg: 135.5259, latitude_deg: 34.6873 },
+    }),
+  );
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  assert.doesNotMatch(text, /secret-google-key/);
+  const parsed = JSON.parse(text);
+  assert.equal(parsed.route.provider, "google");
+  assert.equal(parsed.route.coordinate_system, "WGS84");
+  assert.equal(parsed.route.route_preference, "avoid_highway");
+});

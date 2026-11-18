@@ -151,3 +151,59 @@ test("does not reinterpret traffic counts or average speeds as live driving guid
   assert.equal(route.speed_limit_kph, undefined);
   assert.equal(route.traffic_light_countdown_s, undefined);
 });
+
+test("handles cross-city Linyi to Jinan West 14k-vertex routes, micro-steps, and broken sibling candidates", async () => {
+  const polylineParts = [];
+  for (let i = 0; i < 14_500; i += 1) {
+    const t = i / 14_499;
+    const lon = (118.3564 + (116.8913 - 118.3564) * t).toFixed(6);
+    const lat = (35.1047 + (36.6691 - 35.1047) * t + Math.sin(i * 0.1) * 0.0002).toFixed(6);
+    polylineParts.push(`${lon},${lat}`);
+  }
+  const longStep = {
+    step_distance: "272000",
+    road_name: "G2京沪高速",
+    instruction: "沿G2京沪高速行驶272公里",
+    polyline: polylineParts.join(";"),
+    navi: { action: "直行" },
+    tmcs: [{ tmc_distance: "272000", tmc_status: "畅通" }],
+  };
+  // Single-point micro-step at Jinan West Station drop-off curb (previously threw INVALID_POLYLINE)
+  const microStep = {
+    step_distance: "18",
+    road_name: "齐鲁大道落客平台",
+    instruction: "到达济南西站",
+    polyline: "116.891300,36.669100",
+    navi: { action: "到达目的地", assistant_action: "到达目的地" },
+    tmcs: [],
+  };
+
+  const payload = {
+    status: "1",
+    route: {
+      paths: [
+        { distance: "5000", cost: { duration: "300" }, steps: [{ step_distance: "5000", polyline: "" }] },
+        {
+          distance: "272018",
+          restriction: "0",
+          cost: { duration: "10800", tolls: "115" },
+          steps: [longStep, microStep],
+        },
+      ],
+    },
+  };
+
+  const options = transformAmapRouteOptionsV2(payload, {
+    generatedAtMs: 1700000000500,
+    routePreference: "default",
+  });
+  assert.equal(options.length, 1, "broken candidate #1 must not kill valid candidate #2");
+  assert.equal(options[0].polyline.length, 14_501);
+  assert.equal(options[0].has_highway, true);
+  assert.equal(options[0].toll_yuan, 115);
+
+  // Changing live duration on traffic refresh must not alter route_id when path_id is absent.
+  payload.route.paths[1].cost.duration = "11400";
+  const refreshed = transformAmapRouteOptionsV2(payload, { generatedAtMs: 1700000060500 });
+  assert.equal(refreshed[0].route_id, options[0].route_id);
+});

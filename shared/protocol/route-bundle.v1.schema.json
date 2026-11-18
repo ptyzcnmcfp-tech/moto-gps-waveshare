@@ -46,11 +46,11 @@
           "maxLength": 96
         },
         "provider": {
-          "const": "amap"
+          "enum": ["amap", "google"]
         },
         "coordinate_system": {
-          "const": "GCJ-02",
-          "description": "Every point in this bundle is GCJ-02. WGS84 GNSS fixes must cross the same explicit transform boundary before matching."
+          "enum": ["GCJ-02", "WGS84"],
+          "description": "Explicit datum for every point in this bundle. GCJ-02 routes shift WGS84 GNSS fixes at matching time; WGS84 routes match directly."
         },
         "generated_at_ms": {
           "type": "integer",
@@ -67,24 +67,45 @@
           "minimum": 0,
           "maximum": 604800
         },
+        "route_preference": {
+          "type": "string",
+          "enum": ["default", "avoid_highway", "less_tolls", "fastest"]
+        },
+        "has_highway": {
+          "type": "boolean",
+          "description": "True when the route uses controlled-access expressways that may restrict motorcycles in parts of China."
+        },
+        "has_elevated": {
+          "type": "boolean",
+          "description": "True when the route uses urban elevated expressways or ring roads."
+        },
+        "toll_yuan": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "restriction_active": {
+          "type": "boolean",
+          "description": "True when the upstream provider flagged a local plate/vehicle restriction along the path."
+        },
         "polyline": {
           "type": "array",
           "minItems": 2,
-          "maxItems": 8192,
+          "maxItems": 32768,
           "items": {
             "$ref": "#/$defs/gcj02Point"
           }
         },
         "maneuvers": {
           "type": "array",
-          "maxItems": 512,
+          "maxItems": 1024,
           "items": {
             "$ref": "#/$defs/maneuver"
           }
         },
         "traffic": {
           "type": "array",
-          "maxItems": 2048,
+          "maxItems": 4096,
           "items": {
             "$ref": "#/$defs/trafficSegment"
           }

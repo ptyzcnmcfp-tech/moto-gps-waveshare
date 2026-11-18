@@ -46,6 +46,11 @@
       "minLength": 1,
       "maxLength": 64,
       "description": "Optional provider POI identifier selected by the user. The backend may use it to improve destination entrance routing."
+    },
+    "route_preference": {
+      "type": "string",
+      "enum": ["default", "avoid_highway", "less_tolls", "fastest"],
+      "description": "Optional motorcycle/driving routing preference (e.g. avoid expressways where motorcycles are restricted)."
     }
   },
   "$defs": {

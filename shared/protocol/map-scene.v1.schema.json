@@ -16,7 +16,7 @@
   ],
   "properties": {
     "schema_version": { "const": 1 },
-    "coordinate_system": { "const": "GCJ-02" },
+    "coordinate_system": { "enum": ["GCJ-02", "WGS84"] },
     "scene_revision": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
     "view_origin_e6": { "$ref": "#/$defs/point" },
     "radius_m": { "type": "integer", "minimum": 100, "maximum": 1500 },

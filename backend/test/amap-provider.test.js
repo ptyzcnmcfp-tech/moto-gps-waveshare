@@ -170,3 +170,43 @@ test("does not retry an AMap route business error returned over HTTP 200", async
   await assert.rejects(provider.planRoute(request), (error) => error.code === "AMAP_10001");
   assert.equal(calls, 1);
 });
+
+test("maps avoid_highway preference and retains selected candidate #2 via previous_route_id", async () => {
+  const url = buildAmapDrivingUrl(
+    { ...request, route_preference: "avoid_highway" },
+    { key: "test-only-placeholder" },
+  );
+  assert.equal(url.searchParams.get("strategy"), "40");
+
+  const motorUrl = buildAmapDrivingUrl(
+    { ...request, route_preference: "avoid_highway" },
+    {
+      key: "test-only-placeholder",
+      enableMotorcycleApi: true,
+      motorcyclePlate: "鲁A12345",
+    },
+  );
+  assert.equal(motorUrl.pathname, "/v5/direction/motor");
+  assert.equal(motorUrl.searchParams.get("strategy"), "14");
+  assert.equal(motorUrl.searchParams.get("plate"), "鲁A12345");
+
+  const payload = await routeFixture();
+  const second = structuredClone(payload.route.paths[0]);
+  second.path_id = "fixture-beijing-candidate-2";
+  second.distance = "2640";
+  payload.route.paths.push(second);
+
+  const provider = createAmapProvider({
+    key: "test-only-placeholder",
+    fetchImpl: async () => jsonResponse(payload),
+    clock: () => 1700000000999,
+  });
+
+  const retained = await provider.planRoute({
+    ...request,
+    is_reroute: false,
+    previous_route_id: "amap-fixture-beijing-candidate-2",
+  });
+  assert.equal(retained.route_id, "amap-fixture-beijing-candidate-2");
+  assert.equal(retained.total_distance_m, 2640);
+});
