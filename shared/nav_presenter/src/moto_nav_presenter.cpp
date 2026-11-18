@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 
 namespace moto::nav {
@@ -317,14 +318,15 @@ void NavPresenter::update(const NavSnapshot& snapshot) {
                           : snapshot.next_maneuver.road_name;
   }
 
-  ui_state_ = {};
+  std::memset(&ui_state_, 0, sizeof(ui_state_));
   ui_state_.page = map_page(snapshot.display_page);
   ui_state_.mode = map_mode(snapshot);
   ui_state_.maneuver =
-      snapshot.has_next_maneuver
-          ? map_maneuver(snapshot.next_maneuver.type)
-          : (snapshot.state == NavState::Arrived ? MOTO_MANEUVER_ARRIVE
-                                                 : MOTO_MANEUVER_STRAIGHT);
+      snapshot.state == NavState::Arrived
+          ? MOTO_MANEUVER_ARRIVE
+          : (snapshot.has_next_maneuver
+                 ? map_maneuver(snapshot.next_maneuver.type)
+                 : MOTO_MANEUVER_STRAIGHT);
   ui_state_.traffic = map_traffic(snapshot.traffic_ahead);
   ui_state_.distance_to_maneuver_m =
       rounded_saturated<std::uint32_t>(
@@ -341,6 +343,10 @@ void NavPresenter::update(const NavSnapshot& snapshot) {
   ui_state_.has_destination = snapshot.has_destination ? 1 : 0;
   ui_state_.route_request_in_flight =
       snapshot.route_request_in_flight ? 1 : 0;
+  ui_state_.gnss_stale =
+      (snapshot.has_usable_fix && snapshot.gnss_stale) ? 1 : 0;
+  ui_state_.heading_valid =
+      (snapshot.has_valid_heading || snapshot.has_usable_fix) ? 1 : 0;
   ui_state_.route_identity = route_identity(snapshot.route_id);
   ui_state_.route_generation = snapshot.route_generation;
   ui_state_.map_scene_revision = snapshot.map_scene_revision;

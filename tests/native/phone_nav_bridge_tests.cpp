@@ -564,6 +564,57 @@ void test_imu_presentation_preserves_40hz_phase_and_stale_course_is_ignored() {
   CHECK(moto::test::phone_nav_bridge_last_heading_deg() == before_stale);
 }
 
+void test_watchdog_heartbeat_recovery_and_disconnect_clears_stale_guidance() {
+  moto::test::reset_phone_nav_bridge_probe();
+  moto::nav::NavPresenter presenter;
+  PhoneNavBridge bridge(presenter);
+  bridge.on_link_state(true);
+
+  moto::ble::ConnectionStatus ready;
+  ready.role = moto::ble::EndpointRole::Phone;
+  ready.state = moto::ble::ConnectionState::Ready;
+  ready.capabilities = moto::ble::CapabilityNavigation |
+                       moto::ble::CapabilityRouteGeometry;
+  ready.session_id = 0xABCD1234U;
+  ready.max_frame_size = 182;
+  CHECK(bridge.on_message(make_message(ready, 1)) == moto::ble::AckStatus::Ok);
+  pump(bridge);
+  CHECK(moto::test::phone_nav_bridge_last_phone_connection() ==
+        MOTO_UI_PHONE_ONLINE);
+
+  // Rider reaches Arrived, then BLE link drops and reconnects to an idle phone
+  // that only sends Heartbeats (not yet navigating). Neither CONNECTING hang
+  // nor ghost ARRIVED state may persist.
+  moto::ble::NavigationSnapshot arrived;
+  arrived.state = moto::ble::NavigationState::Arrived;
+  arrived.network = moto::ble::NetworkState::Online;
+  arrived.route_token = 99;
+  arrived.route_generation = 1;
+  CHECK(bridge.on_message(make_message(arrived, 2)) == moto::ble::AckStatus::Ok);
+  pump(bridge);
+  CHECK(moto::test::phone_nav_bridge_last_maneuver() == MOTO_MANEUVER_ARRIVE);
+
+  // Simulate soft watchdog expiry -> link resumes with Heartbeat only.
+  bridge.on_link_state(false);
+  pump(bridge);
+  CHECK(moto::test::phone_nav_bridge_last_phone_connection() ==
+        MOTO_UI_PHONE_OFFLINE);
+  CHECK(moto::test::phone_nav_bridge_last_maneuver() == MOTO_MANEUVER_STRAIGHT);
+  CHECK(moto::test::phone_nav_bridge_last_route_point_count() == 0);
+
+  bridge.on_link_state(true);
+  pump(bridge);
+  CHECK(moto::test::phone_nav_bridge_last_phone_connection() ==
+        MOTO_UI_PHONE_CONNECTING);
+
+  moto::ble::Heartbeat hb{0xABCD1234U, 5'000U, 0};
+  CHECK(bridge.on_message(make_message(hb, 3)) == moto::ble::AckStatus::Ok);
+  pump(bridge);
+  CHECK(moto::test::phone_nav_bridge_last_phone_connection() ==
+        MOTO_UI_PHONE_ONLINE);
+  CHECK(moto::test::phone_nav_bridge_last_maneuver() == MOTO_MANEUVER_STRAIGHT);
+}
+
 }  // namespace
 
 int main() {
@@ -576,6 +627,7 @@ int main() {
   test_ios_demo_token_attaches_context_and_live_route_clears_it();
   test_map_scene_atomically_replaces_roads_and_buildings_at_capacity();
   test_imu_presentation_preserves_40hz_phase_and_stale_course_is_ignored();
+  test_watchdog_heartbeat_recovery_and_disconnect_clears_stale_guidance();
 
   if (failures != 0) {
     std::cerr << failures << " phone navigation bridge checks failed\n";

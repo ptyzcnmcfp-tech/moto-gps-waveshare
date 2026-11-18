@@ -121,6 +121,11 @@ class PhoneNavBridge {
 #endif
   MotionHeadingFusion heading_fusion_;
   std::uint64_t last_motion_present_ms_ = 0;
+  std::uint64_t last_motion_step_ms_ = 0;
+  std::uint64_t motion_fix_anchor_sample_ms_ = 0;
+  bool reset_motion_origin_anchor_ = true;
+  std::uint32_t last_anchor_progress_m_ = ~std::uint32_t{0};
+  std::uint16_t last_anchor_heading_cdeg_ = ~std::uint16_t{0};
   moto::nav::NavSnapshot snapshot_before_demo_{};
   std::uint64_t demo_started_ms_ = 0;
   bool demo_active_ = false;

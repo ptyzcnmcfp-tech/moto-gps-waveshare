@@ -33,6 +33,14 @@ double wrap_longitude_delta(double delta_deg) {
   return std::remainder(delta_deg, 360.0);
 }
 
+double shortest_heading_delta_deg(double a_deg, double b_deg) {
+  return std::fabs(std::remainder(a_deg - b_deg, 360.0));
+}
+
+double round_datum_coordinate(double value) {
+  return std::round(value * 10'000'000.0) / 10'000'000.0;
+}
+
 double point_segment_distance_squared_m(const Gcj02Point& point,
                                         const Gcj02Point& start,
                                         const Gcj02Point& end) {
@@ -238,20 +246,19 @@ void NavCore::accept_fix(const GnssFix& fix, NavCommands& commands) {
 
   view_.now_ms = std::max(view_.now_ms, fix.timestamp_ms);
   if (!usable_fix(fix)) {
+    if (std::isfinite(fix.accuracy_m) && fix.accuracy_m > 0.0F) {
+      view_.horizontal_accuracy_m = fix.accuracy_m;
+    }
     return;
   }
   view_.horizontal_accuracy_m = fix.accuracy_m;
 
-  const auto converted = moto::coordinates::wgs84_to_gcj02(
-      {fix.position.longitude_deg, fix.position.latitude_deg});
-  if (!converted.ok()) {
+  const auto converted = to_route_datum(fix.position);
+  if (!converted.has_value()) {
     return;
   }
 
-  const Gcj02Point match_position{
-      converted.coordinate.latitude_deg,
-      converted.coordinate.longitude_deg,
-  };
+  const Gcj02Point match_position = *converted;
   double maximum_route_progress_m =
       std::numeric_limits<double>::infinity();
   if (last_gnss_fix_wgs84_.has_value() &&
@@ -307,9 +314,15 @@ void NavCore::accept_fix(const GnssFix& fix, NavCommands& commands) {
     view_.speed_mps = raw_speed;
     if (std::isfinite(fix.heading_deg)) {
       view_.heading_deg = fix.heading_deg;
+      view_.has_valid_heading = true;
     }
   }
   view_.last_fix_ms = fix.timestamp_ms;
+
+  const std::optional<float> moving_heading =
+      (raw_speed >= 1.5F && std::isfinite(fix.heading_deg))
+          ? std::optional<float>(fix.heading_deg)
+          : std::nullopt;
 
   if (view_.state == NavState::Acquiring) {
     enter_planning(commands);
@@ -322,7 +335,9 @@ void NavCore::accept_fix(const GnssFix& fix, NavCommands& commands) {
         match_position,
         std::max(0.0,
                  view_.route_progress_m - kRouteMatchBackwardWindowM),
-        maximum_route_progress_m);
+        maximum_route_progress_m,
+        moving_heading,
+        view_.route_progress_m);
     if (projection.valid) {
       view_.cross_track_distance_m =
           static_cast<float>(projection.cross_track_m);
@@ -391,9 +406,25 @@ void NavCore::accept_route(RouteReady event) {
   traffic_retry_at_ms_ = saturating_add(
       event.received_at_ms, config_.traffic_refresh_interval_ms);
 
+  if (last_gnss_fix_wgs84_.has_value()) {
+    last_match_fix_gcj02_ = to_route_datum(last_gnss_fix_wgs84_->position);
+  }
   if (last_match_fix_gcj02_.has_value()) {
-    const Projection projection =
-        project_onto_route(*last_match_fix_gcj02_);
+    const std::optional<float> moving_heading =
+        (last_gnss_fix_wgs84_.has_value() &&
+         std::isfinite(last_gnss_fix_wgs84_->speed_mps) &&
+         last_gnss_fix_wgs84_->speed_mps >= 1.5F &&
+         std::isfinite(last_gnss_fix_wgs84_->heading_deg))
+            ? std::optional<float>(last_gnss_fix_wgs84_->heading_deg)
+            : std::nullopt;
+    const std::optional<double> preferred_origin =
+        distance_m(*last_match_fix_gcj02_, route_.polyline.front()) <= 60.0
+            ? std::optional<double>(0.0)
+            : std::nullopt;
+    const Projection projection = project_onto_route(
+        *last_match_fix_gcj02_, 0.0,
+        std::numeric_limits<double>::infinity(),
+        moving_heading, preferred_origin);
     if (projection.valid) {
       view_.route_progress_m = std::clamp(
           projection.along_route_m, 0.0, route_.total_distance_m);
@@ -495,19 +526,27 @@ void NavCore::request_traffic_if_due(NavCommands& commands, bool force) {
 void NavCore::update_route_match(const Gcj02Point& position,
                                  NavCommands& commands,
                                  double maximum_route_progress_m) {
+  const std::optional<float> moving_heading =
+      (last_gnss_fix_wgs84_.has_value() &&
+       std::isfinite(last_gnss_fix_wgs84_->speed_mps) &&
+       last_gnss_fix_wgs84_->speed_mps >= 1.5F &&
+       std::isfinite(last_gnss_fix_wgs84_->heading_deg))
+          ? std::optional<float>(last_gnss_fix_wgs84_->heading_deg)
+          : std::nullopt;
   const Projection projection = project_onto_route(
       position,
       std::max(0.0,
                view_.route_progress_m - kRouteMatchBackwardWindowM),
-      maximum_route_progress_m);
+      maximum_route_progress_m,
+      moving_heading,
+      view_.route_progress_m);
   if (!projection.valid) {
     return;
   }
 
   view_.cross_track_distance_m =
       static_cast<float>(projection.cross_track_m);
-  // Progress is monotonic for display and maneuver advancement. A later
-  // map-matcher can replace this policy without changing the public contract.
+  // Progress is monotonic for display and maneuver advancement.
   view_.route_progress_m = std::max(
       view_.route_progress_m,
       std::clamp(projection.along_route_m, 0.0, route_.total_distance_m));
@@ -516,9 +555,13 @@ void NavCore::update_route_match(const Gcj02Point& position,
 
   const double final_distance =
       distance_m(position, route_.polyline.back());
+  const double effective_arrival_radius =
+      (view_.speed_mps < 1.5F)
+          ? std::max<double>(config_.arrival_radius_m, 28.0)
+          : static_cast<double>(config_.arrival_radius_m);
   const bool at_destination =
-      final_distance <= config_.arrival_radius_m &&
-      view_.remaining_distance_m <= config_.arrival_radius_m * 2.0F;
+      final_distance <= effective_arrival_radius &&
+      view_.remaining_distance_m <= effective_arrival_radius * 2.0;
   if (at_destination) {
     arrival_count_ = static_cast<std::uint8_t>(std::min<int>(
         255, static_cast<int>(arrival_count_) + 1));
@@ -528,16 +571,23 @@ void NavCore::update_route_match(const Gcj02Point& position,
   if (arrival_count_ >= config_.arrival_confirmations) {
     view_.state = NavState::Arrived;
     view_.off_route = false;
+    view_.traffic_request_in_flight = false;
+    active_traffic_request_id_ = 0;
     view_.route_progress_m = route_.total_distance_m;
     update_derived_route_fields();
     return;
   }
 
-  if (projection.cross_track_m > config_.off_route_threshold_m) {
+  const float effective_off_route_threshold_m = std::max(
+      config_.off_route_threshold_m,
+      1.25F * view_.horizontal_accuracy_m + 15.0F);
+  if (projection.cross_track_m > effective_off_route_threshold_m) {
     off_route_count_ = static_cast<std::uint8_t>(std::min<int>(
         255, static_cast<int>(off_route_count_) + 1));
   } else if (projection.cross_track_m < config_.on_route_threshold_m) {
     off_route_count_ = 0;
+  } else if (off_route_count_ > 0) {
+    --off_route_count_;
   }
 
   if (off_route_count_ >= config_.off_route_confirmations) {
@@ -655,14 +705,18 @@ void NavCore::update_derived_route_fields() {
 
   view_.has_next_maneuver = false;
   view_.distance_to_next_maneuver_m = 0.0;
-  for (const Maneuver& maneuver : route_.maneuvers) {
-    if (maneuver.route_offset_m + 1.0 >= view_.route_progress_m) {
+  if (view_.state != NavState::Arrived && !route_.maneuvers.empty()) {
+    const double target_offset = std::max(0.0, view_.route_progress_m - 1.0);
+    const auto it = std::lower_bound(
+        route_.maneuvers.begin(), route_.maneuvers.end(), target_offset,
+        [](const Maneuver& maneuver, double offset) {
+          return maneuver.route_offset_m < offset;
+        });
+    if (it != route_.maneuvers.end()) {
       view_.has_next_maneuver = true;
-      view_.next_maneuver = maneuver;
+      view_.next_maneuver = *it;
       view_.distance_to_next_maneuver_m =
-          std::max(0.0,
-                   maneuver.route_offset_m - view_.route_progress_m);
-      break;
+          std::max(0.0, it->route_offset_m - view_.route_progress_m);
     }
   }
 
@@ -706,6 +760,24 @@ bool NavCore::valid_point(const Gcj02Point& point) const {
   return valid_coordinate(point);
 }
 
+std::optional<Gcj02Point> NavCore::to_route_datum(
+    const Wgs84Point& point) const {
+  if (!valid_point(point)) {
+    return std::nullopt;
+  }
+  if (route_.coordinate_system == RouteCoordinateSystem::Wgs84) {
+    return Gcj02Point{round_datum_coordinate(point.latitude_deg),
+                      round_datum_coordinate(point.longitude_deg)};
+  }
+  const auto converted = moto::coordinates::wgs84_to_gcj02(
+      {point.longitude_deg, point.latitude_deg});
+  if (!converted.ok()) {
+    return std::nullopt;
+  }
+  return Gcj02Point{converted.coordinate.latitude_deg,
+                    converted.coordinate.longitude_deg};
+}
+
 bool NavCore::usable_fix(const GnssFix& fix) const {
   return valid_point(fix.position) && std::isfinite(fix.accuracy_m) &&
          fix.accuracy_m >= 0.0F &&
@@ -729,7 +801,9 @@ bool NavCore::valid_route(const RouteBundle& route) const {
 NavCore::Projection NavCore::project_onto_route(
     const Gcj02Point& point,
     double minimum_route_progress_m,
-    double maximum_route_progress_m) const {
+    double maximum_route_progress_m,
+    std::optional<float> moving_heading_deg,
+    std::optional<double> preferred_route_progress_m) const {
   Projection best;
   if (route_.polyline.size() < 2 ||
       cumulative_distance_m_.size() != route_.polyline.size()) {
@@ -751,34 +825,48 @@ NavCore::Projection NavCore::project_onto_route(
       std::clamp(maximum_route_progress_m, 0.0, route_total) /
       route_per_geometry;
 
-  double best_distance = std::numeric_limits<double>::infinity();
-  for (std::size_t i = 0; i + 1 < route_.polyline.size(); ++i) {
+  // Jump directly to the active [minimum, maximum] window in O(log N) so
+  // 20,000-vertex cross-city highway routes never scan unrelated segments.
+  const auto first_end_it = std::lower_bound(
+      cumulative_distance_m_.begin() + 1, cumulative_distance_m_.end(),
+      minimum_geometry_progress_m);
+  const std::size_t first_segment =
+      first_end_it == cumulative_distance_m_.end()
+          ? route_.polyline.size() - 1
+          : static_cast<std::size_t>(
+                std::distance(cumulative_distance_m_.begin(), first_end_it) -
+                1);
+  const auto past_last_start_it = std::upper_bound(
+      cumulative_distance_m_.begin(), cumulative_distance_m_.end() - 1,
+      maximum_geometry_progress_m);
+  const std::size_t end_segment = static_cast<std::size_t>(
+      std::distance(cumulative_distance_m_.begin(), past_last_start_it));
+
+  const double point_cos_lat = std::cos(radians(point.latitude_deg));
+  double best_score = std::numeric_limits<double>::infinity();
+  for (std::size_t i = first_segment; i < end_segment; ++i) {
+    const double segment_start_m = cumulative_distance_m_[i];
+    const double segment_end_m = cumulative_distance_m_[i + 1];
+    if (segment_end_m < minimum_geometry_progress_m ||
+        segment_start_m > maximum_geometry_progress_m) {
+      continue;
+    }
     const Gcj02Point& a = route_.polyline[i];
     const Gcj02Point& b = route_.polyline[i + 1];
-    const double reference_lat =
-        radians((a.latitude_deg + b.latitude_deg + point.latitude_deg) /
-                3.0);
-    const double cos_lat = std::cos(reference_lat);
     const double ax = radians(wrap_longitude_delta(
                             a.longitude_deg - point.longitude_deg)) *
-                      cos_lat * kEarthRadiusM;
+                      point_cos_lat * kEarthRadiusM;
     const double ay = radians(a.latitude_deg - point.latitude_deg) *
                       kEarthRadiusM;
     const double bx = radians(wrap_longitude_delta(
                             b.longitude_deg - point.longitude_deg)) *
-                      cos_lat * kEarthRadiusM;
+                      point_cos_lat * kEarthRadiusM;
     const double by = radians(b.latitude_deg - point.latitude_deg) *
                       kEarthRadiusM;
     const double dx = bx - ax;
     const double dy = by - ay;
     const double length_squared = dx * dx + dy * dy;
     if (length_squared <= 1e-6) {
-      continue;
-    }
-    const double segment_start_m = cumulative_distance_m_[i];
-    const double segment_end_m = cumulative_distance_m_[i + 1];
-    if (segment_end_m < minimum_geometry_progress_m ||
-        segment_start_m > maximum_geometry_progress_m) {
       continue;
     }
     const double segment_length_m = segment_end_m - segment_start_m;
@@ -801,12 +889,35 @@ NavCore::Projection NavCore::project_onto_route(
     const double projected_x = ax + t * dx;
     const double projected_y = ay + t * dy;
     const double cross_track = std::hypot(projected_x, projected_y);
-    if (cross_track < best_distance) {
-      best_distance = cross_track;
-      const double geometry_along =
-          segment_start_m + t * segment_length_m;
+    const double geometry_along = segment_start_m + t * segment_length_m;
+    const double route_along = geometry_along * route_per_geometry;
+
+    double heading_penalty_m = 0.0;
+    if (moving_heading_deg.has_value()) {
+      double seg_heading_deg = std::atan2(dx, dy) * 180.0 / kPi;
+      if (seg_heading_deg < 0.0) seg_heading_deg += 360.0;
+      const double delta_deg = shortest_heading_delta_deg(
+          static_cast<double>(*moving_heading_deg), seg_heading_deg);
+      if (delta_deg > 35.0) {
+        heading_penalty_m = std::min(14.0, (delta_deg - 35.0) * 0.10);
+      }
+    }
+
+    double continuity_penalty_m = 0.0;
+    if (preferred_route_progress_m.has_value()) {
+      const double jump_m =
+          std::fabs(route_along - *preferred_route_progress_m);
+      if (jump_m > 40.0) {
+        continuity_penalty_m = std::min(8.0, (jump_m - 40.0) * 0.015);
+      }
+    }
+
+    const double score =
+        cross_track + heading_penalty_m + continuity_penalty_m;
+    if (score < best_score) {
+      best_score = score;
       best.valid = true;
-      best.along_route_m = geometry_along * route_per_geometry;
+      best.along_route_m = route_along;
       best.cross_track_m = cross_track;
       best.segment_index = i;
     }

@@ -153,11 +153,16 @@ void MotionHeadingSensor::run() {
       result = qmi8658_read_sensor_data(&device, &data);
       if (result == ESP_OK) {
         consecutive_failures = 0;
-        update_gravity(gravity, data, 0.025F);
-        const float raw_rate = clockwise_heading_rate(gravity, data);
-        const float corrected_rate = raw_rate - bias_dps;
         const float angular = magnitude(data.gyroX, data.gyroY, data.gyroZ);
         const float accel = magnitude(data.accelX, data.accelY, data.accelZ);
+        // Freeze gravity adaptation during cornering lean/roll so centripetal
+        // acceleration does not tilt the vertical yaw projection axis.
+        if (!gravity.initialized ||
+            (angular < 8.0F && accel > 8.8F && accel < 10.8F)) {
+          update_gravity(gravity, data, gravity.initialized ? 0.008F : 0.08F);
+        }
+        const float raw_rate = clockwise_heading_rate(gravity, data);
+        const float corrected_rate = raw_rate - bias_dps;
         // Learn residual bias only during convincingly quiet intervals.
         if (std::abs(corrected_rate) < 1.1F && angular < 2.0F &&
             accel > 8.2F && accel < 11.4F) {

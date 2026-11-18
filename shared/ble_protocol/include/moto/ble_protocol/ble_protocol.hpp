@@ -140,13 +140,25 @@ struct Frame {
   Bytes payload;
 };
 
+struct FrameHeader {
+  std::uint8_t version = kProtocolVersion;
+  MessageType type = MessageType::Heartbeat;
+  std::uint8_t flags = 0;
+  std::uint16_t sequence = 0;
+  std::uint16_t fragment_offset = 0;
+  std::uint16_t message_length = 0;
+};
+
 using BytesResult = Result<Bytes>;
 using FrameResult = Result<Frame>;
+using FrameHeaderResult = Result<FrameHeader>;
 using FramesResult = Result<std::vector<Bytes>>;
 
 [[nodiscard]] std::uint16_t crc16_ccitt_false(ByteView bytes) noexcept;
 [[nodiscard]] BytesResult encode_frame(const Frame& frame);
 [[nodiscard]] FrameResult decode_frame(ByteView bytes);
+// Zero-allocation header inspection for transport control-plane decisions.
+[[nodiscard]] FrameHeaderResult peek_frame_header(ByteView bytes) noexcept;
 
 // max_frame_size is the complete GATT characteristic value size, not the ATT
 // MTU. For an ATT MTU of 23, pass 20. Start/End are assigned by this function;

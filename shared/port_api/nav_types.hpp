@@ -22,6 +22,11 @@ struct Gcj02Point {
   double longitude_deg = 0.0;
 };
 
+enum class RouteCoordinateSystem : std::uint8_t {
+  Gcj02 = 0,
+  Wgs84 = 1,
+};
+
 enum class NavState : std::uint8_t {
   Idle,
   Acquiring,
@@ -95,6 +100,7 @@ struct RouteBundle {
   // Zero means the provider did not supply a trustworthy speed limit.
   std::uint16_t speed_limit_kph = 0;
   TimestampMs generated_at_ms = 0;
+  RouteCoordinateSystem coordinate_system = RouteCoordinateSystem::Gcj02;
 };
 
 struct TrafficSnapshot {

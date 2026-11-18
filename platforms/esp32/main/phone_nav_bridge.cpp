@@ -163,6 +163,15 @@ void clear_map_context(moto::nav::NavSnapshot& output) {
   output.map_scene_revision = 0;
 }
 
+void reset_disconnected_snapshot(moto::nav::NavSnapshot& output) {
+  const moto::nav::DisplayPage preserved_page = output.display_page;
+  output = {};
+  output.state = moto::nav::NavState::Idle;
+  output.network = moto::nav::NetworkState::Offline;
+  output.display_page = preserved_page;
+  output.gnss_stale = true;
+}
+
 moto::nav::RoadContextClass map_road_class(
     moto::ble::MapRoadClass road_class) {
   return static_cast<moto::nav::RoadContextClass>(road_class);
@@ -332,20 +341,18 @@ void PhoneNavBridge::on_link_state(bool active) {
       phone_snapshot.network = moto::nav::NetworkState::Connecting;
     } else {
       phone_session_id_ = 0;
-      phone_snapshot.network = moto::nav::NetworkState::Offline;
-      phone_snapshot.gnss_stale = true;
-      phone_snapshot.has_usable_fix = false;
-      phone_snapshot.route_request_in_flight = false;
-      phone_snapshot.traffic_request_in_flight = false;
-      phone_snapshot.speed_mps = 0.0F;
+      reset_disconnected_snapshot(phone_snapshot);
       geometry_ = {};
-      phone_snapshot.has_route_view = false;
-      clear_map_context(phone_snapshot);
       heading_fusion_.reset();
       last_motion_present_ms_ = 0;
+      last_motion_step_ms_ = 0;
+      motion_fix_anchor_sample_ms_ = 0;
+      reset_motion_origin_anchor_ = true;
+      last_anchor_progress_m_ = ~std::uint32_t{0};
+      last_anchor_heading_cdeg_ = ~std::uint16_t{0};
       music_page_enabled_ = false;
       media_state_ = {};
-      media_state_.source_name = "iPhone";
+      media_state_.source_name = "PHONE";
       media_state_.track_title = "等待连接";
     }
   }
@@ -364,6 +371,38 @@ void PhoneNavBridge::on_imu_sample(float heading_rate_dps,
       return;
     }
     snapshot_.heading_deg = heading_fusion_.heading_deg();
+    snapshot_.has_valid_heading = true;
+
+    // Dead-reckon the local map origin smoothly between 1 Hz phone fixes so
+    // riding at highway speed never steps the road network once per second.
+    if (reset_motion_origin_anchor_) {
+      motion_fix_anchor_sample_ms_ = sample_ms;
+      last_motion_step_ms_ = sample_ms;
+      reset_motion_origin_anchor_ = false;
+    } else if (snapshot_.has_route_view && snapshot_.speed_mps >= 0.8F &&
+               !snapshot_.gnss_stale && sample_ms > last_motion_step_ms_ &&
+               sample_ms - last_motion_step_ms_ <= 100U &&
+               sample_ms >= motion_fix_anchor_sample_ms_ &&
+               sample_ms - motion_fix_anchor_sample_ms_ <= 1'200U) {
+      const double dt_s =
+          static_cast<double>(sample_ms - last_motion_step_ms_) / 1'000.0;
+      const double advance_m =
+          static_cast<double>(snapshot_.speed_mps) * dt_s;
+      const double heading_rad =
+          static_cast<double>(snapshot_.heading_deg) * kPi / 180.0;
+      const double cos_lat = std::max(
+          0.1,
+          std::cos(snapshot_.route_view_origin.latitude_deg * kPi / 180.0));
+      snapshot_.route_view_origin.latitude_deg +=
+          (advance_m * std::cos(heading_rad) / kDemoEarthRadiusM) *
+          (180.0 / kPi);
+      snapshot_.route_view_origin.longitude_deg +=
+          (advance_m * std::sin(heading_rad) /
+           (kDemoEarthRadiusM * cos_lat)) *
+          (180.0 / kPi);
+    }
+    last_motion_step_ms_ = sample_ms;
+
     // The QMI8658 runs at 125 Hz. Reproject at the display's unified 40 Hz
     // cadence; requests still coalesce if one physical refresh runs long.
     if (sample_ms - last_motion_present_ms_ >= 25 &&
@@ -532,22 +571,40 @@ moto::ble::AckStatus PhoneNavBridge::on_message(
                 break;
               case moto::ble::ConnectionState::Closing:
                 ui_phone_connection_ = MOTO_UI_PHONE_OFFLINE;
+                phone_session_id_ = 0;
+                reset_disconnected_snapshot(phone_snapshot_locked());
+                geometry_ = {};
+                heading_fusion_.reset();
                 break;
               case moto::ble::ConnectionState::Starting:
               case moto::ble::ConnectionState::Degraded:
                 ui_phone_connection_ = MOTO_UI_PHONE_CONNECTING;
-              break;
+                break;
             }
           }
           present_navigation();
         } else if constexpr (std::is_same_v<T, moto::ble::Heartbeat>) {
-          std::uint32_t phone_session_id = 0;
+          bool promoted_online = false;
           {
             const std::lock_guard<std::mutex> lock(state_mutex_);
-            phone_session_id = phone_session_id_;
+            if (phone_session_id_ != 0 &&
+                value.session_id != phone_session_id_) {
+              return moto::ble::AckStatus::InvalidState;
+            }
+            // If the soft link watchdog fired during a brief phone background
+            // stall without dropping the physical BLE connection, BleNavTransport
+            // only forwards Heartbeats once protocol_ready is true. Restore the
+            // online UI state so an idle phone never leaves the display stuck on
+            // CONNECTING.
+            if (value.session_id != 0 &&
+                ui_phone_connection_ != MOTO_UI_PHONE_ONLINE) {
+              phone_session_id_ = value.session_id;
+              ui_phone_connection_ = MOTO_UI_PHONE_ONLINE;
+              promoted_online = true;
+            }
           }
-          if (phone_session_id != 0 && value.session_id != phone_session_id) {
-            return moto::ble::AckStatus::InvalidState;
+          if (promoted_online) {
+            present_navigation();
           }
         } else if constexpr (
             std::is_same_v<T, moto::ble::NavigationSnapshot>) {
@@ -601,9 +658,20 @@ void PhoneNavBridge::consume_navigation(
         static_cast<float>(input.heading_cdeg) / 100.0F;
     const bool has_usable_fix = has_flag(
         input.flags, moto::ble::NavigationHasFix);
-    heading_fusion_.anchor(phone_heading_deg, phone_speed_mps,
-                           has_usable_fix && !has_flag(
-                               input.flags, moto::ble::NavigationGnssStale));
+    const bool fresh_gnss =
+        has_usable_fix && !has_flag(input.flags, moto::ble::NavigationGnssStale);
+    const bool fix_changed =
+        !heading_fusion_.initialized() ||
+        input.route_progress_m != last_anchor_progress_m_ ||
+        input.heading_cdeg != last_anchor_heading_cdeg_ ||
+        phone_speed_mps < 0.6F;
+    if (fix_changed) {
+      heading_fusion_.anchor(phone_heading_deg, phone_speed_mps, fresh_gnss);
+      if (fresh_gnss) {
+        last_anchor_progress_m_ = input.route_progress_m;
+        last_anchor_heading_cdeg_ = input.heading_cdeg;
+      }
+    }
 
     phone_snapshot.state = map_state(input.state);
     phone_snapshot.network = map_network(input.network);
@@ -625,6 +693,8 @@ void PhoneNavBridge::consume_navigation(
     phone_snapshot.heading_deg = heading_fusion_.initialized()
                                      ? heading_fusion_.heading_deg()
                                      : phone_heading_deg;
+    phone_snapshot.has_valid_heading =
+        heading_fusion_.initialized() || fresh_gnss;
     phone_snapshot.horizontal_accuracy_m =
         static_cast<float>(input.accuracy_dm) / 10.0F;
     phone_snapshot.cross_track_distance_m =
@@ -639,21 +709,31 @@ void PhoneNavBridge::consume_navigation(
     phone_snapshot.now_ms = monotonic_ms();
     phone_snapshot.last_fix_ms =
         phone_snapshot.has_usable_fix ? phone_snapshot.now_ms : 0;
+    if (fresh_gnss) {
+      reset_motion_origin_anchor_ = true;
+    }
 
-    char route_id[20]{};
-    std::snprintf(route_id, sizeof(route_id), "ble-%08lx",
-                  static_cast<unsigned long>(input.route_token));
-    phone_snapshot.route_id = route_id;
-
-    // The built-in demo predates MapScene and still uses its matching,
-    // attributed OSM fixture. Once a live MapScene revision has arrived,
-    // ordinary navigation snapshots retain that complete phone-supplied
-    // window until it is atomically replaced or the session disconnects.
-    if (is_ios_demo_route_token(input.route_token) &&
-        phone_snapshot.map_scene_revision == 0) {
-      add_demo_road_context(phone_snapshot);
-    } else if (phone_snapshot.map_scene_revision == 0) {
+    if (input.state == moto::ble::NavigationState::Idle &&
+        input.route_token == 0) {
+      phone_snapshot.route_id.clear();
       clear_map_context(phone_snapshot);
+      geometry_ = {};
+    } else {
+      char route_id[20]{};
+      std::snprintf(route_id, sizeof(route_id), "ble-%08lx",
+                    static_cast<unsigned long>(input.route_token));
+      phone_snapshot.route_id = route_id;
+
+      // The built-in demo predates MapScene and still uses its matching,
+      // attributed OSM fixture. Once a live MapScene revision has arrived,
+      // ordinary navigation snapshots retain that complete phone-supplied
+      // window until it is atomically replaced or the session disconnects.
+      if (is_ios_demo_route_token(input.route_token) &&
+          phone_snapshot.map_scene_revision == 0) {
+        add_demo_road_context(phone_snapshot);
+      } else if (phone_snapshot.map_scene_revision == 0) {
+        clear_map_context(phone_snapshot);
+      }
     }
 
     phone_snapshot.next_maneuver = {};

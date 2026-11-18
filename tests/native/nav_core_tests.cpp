@@ -578,6 +578,101 @@ void test_stale_location_stream_clears_displayed_speed() {
   CHECK(fixture.core.snapshot().speed_mps == 0.0F);
 }
 
+void test_wgs84_route_coordinate_system_does_not_apply_gcj02_shift() {
+  // Shenzhen WGS84 coordinate inside Mainland China GCJ-02 bounds: when a
+  // provider supplies an explicit WGS84 route, fixes must match 1:1 without
+  // adding a ~500 m Mars offset.
+  constexpr Wgs84Point start{22.543100, 114.057900};
+  constexpr Wgs84Point mid{22.543100, 114.059900};
+  constexpr Wgs84Point end{22.543100, 114.061900};
+
+  NavCore core;
+  core.handle(NetworkChanged{NetworkState::Online});
+  core.handle(BeginNavigation{end});
+  const auto req = core.handle(GnssFixReceived{fix(start, 1'000)});
+  RouteBundle wgs_route;
+  wgs_route.route_id = "google-wgs84-test";
+  wgs_route.coordinate_system = RouteCoordinateSystem::Wgs84;
+  wgs_route.polyline = {
+      {start.latitude_deg, start.longitude_deg},
+      {mid.latitude_deg, mid.longitude_deg},
+      {end.latitude_deg, end.longitude_deg},
+  };
+  wgs_route.total_duration_s = 90;
+  core.handle(RouteReady{req[0].request_id, wgs_route, 1'010});
+  core.handle(GnssFixReceived{fix(mid, 5'000)});
+  CHECK(core.snapshot().state == NavState::Navigating);
+  CHECK(core.snapshot().cross_track_distance_m < 1.0F);
+  CHECK(core.snapshot().route_progress_m > 180.0);
+}
+
+void test_long_cross_city_route_and_heading_disambiguation() {
+  // 15,000-point ~270 km cross-city corridor (Linyi -> Jinan scale) plus an
+  // overpass/hairpin heading disambiguation check.
+  constexpr Wgs84Point origin{35.104000, 118.356000};
+  RouteBundle long_route;
+  long_route.route_id = "linyi-jinan-west";
+  long_route.polyline.reserve(15'001);
+  for (int i = 0; i <= 15'000; ++i) {
+    const double t = static_cast<double>(i) / 15'000.0;
+    long_route.polyline.push_back(
+        gcj02({origin.latitude_deg + t * 1.565,
+               origin.longitude_deg - t * 1.465}));
+  }
+  long_route.maneuvers = {
+      Maneuver{1, ManeuverType::Continue, 5'000.0, "京沪高速", "直行", 0},
+      Maneuver{2, ManeuverType::Exit, 240'000.0, "济南西立交", "驶出高速", 0},
+      Maneuver{3, ManeuverType::Arrive, 275'000.0, "济南西站", "到达", 0},
+  };
+  long_route.total_distance_m = 275'000.0;
+  long_route.total_duration_s = 10'800;
+
+  const Wgs84Point dest{origin.latitude_deg + 1.565,
+                        origin.longitude_deg - 1.465};
+  NavCore core;
+  core.handle(NetworkChanged{NetworkState::Online});
+  core.handle(BeginNavigation{dest});
+  const auto req = core.handle(GnssFixReceived{fix(origin, 1'000)});
+  core.handle(RouteReady{req[0].request_id, long_route, 1'020});
+  CHECK(core.snapshot().state == NavState::Navigating);
+
+  // Advance 50 steps along the 15,000-vertex route via O(log N) windowed match.
+  for (int step = 1; step <= 50; ++step) {
+    const double t = static_cast<double>(step) / 500.0;
+    GnssFix f{
+        {origin.latitude_deg + t * 1.565, origin.longitude_deg - t * 1.465},
+        5.0F,
+        28.0F,
+        320.0F,
+        static_cast<TimestampMs>(1'000 + step * 20'000)};
+    core.handle(GnssFixReceived{f});
+  }
+  CHECK(core.snapshot().state == NavState::Navigating);
+  CHECK(core.snapshot().route_progress_m > 20'000.0);
+  CHECK(core.snapshot().cross_track_distance_m < 5.0F);
+
+  // Heading disambiguation on a median-divided U-turn: rider is heading North
+  // (0 deg) on leg 0->1, 5 m east of leg 0->1 and 3 m west of returning
+  // Southbound (180 deg) leg 2->3. Heading alignment keeps leg 0->1!
+  constexpr Wgs84Point u_a{36.670000, 117.000000};
+  constexpr Wgs84Point u_b{36.670600, 117.000000};
+  constexpr Wgs84Point u_c{36.670600, 117.000090};
+  constexpr Wgs84Point u_d{36.670000, 117.000090};
+  NavCore uturn_core;
+  uturn_core.handle(NetworkChanged{NetworkState::Online});
+  uturn_core.handle(BeginNavigation{u_d});
+  GnssFix start_north{u_a, 4.0F, 10.0F, 0.0F, 1'000};
+  const auto u_req = uturn_core.handle(GnssFixReceived{start_north});
+  RouteBundle u_route;
+  u_route.route_id = "median-uturn";
+  u_route.polyline = {gcj02(u_a), gcj02(u_b), gcj02(u_c), gcj02(u_d)};
+  uturn_core.handle(RouteReady{u_req[0].request_id, u_route, 1'010});
+
+  GnssFix slightly_toward_median{{36.670200, 117.000056}, 4.0F, 10.0F, 0.0F, 2'000};
+  uturn_core.handle(GnssFixReceived{slightly_toward_median});
+  CHECK(uturn_core.snapshot().route_progress_m < 40.0);
+}
+
 }  // namespace
 
 int main() {
@@ -601,6 +696,8 @@ int main() {
   test_malformed_route_numbers_are_contained();
   test_stationary_fix_zeroes_speed_and_holds_heading();
   test_stale_location_stream_clears_displayed_speed();
+  test_wgs84_route_coordinate_system_does_not_apply_gcj02_shift();
+  test_long_cross_city_route_and_heading_disambiguation();
 
   if (failures != 0) {
     std::cerr << failures << " nav_core checks failed\n";

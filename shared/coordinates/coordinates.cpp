@@ -66,10 +66,26 @@ bool is_valid_coordinate(Coordinate coordinate) noexcept {
 }
 
 bool is_outside_gcj02_coverage(Coordinate coordinate) noexcept {
-  return coordinate.longitude_deg < 72.004 ||
-         coordinate.longitude_deg > 137.8347 ||
-         coordinate.latitude_deg < 0.8293 ||
-         coordinate.latitude_deg > 55.8271;
+  const double lon = coordinate.longitude_deg;
+  const double lat = coordinate.latitude_deg;
+  if (lon < 72.004 || lon > 135.10 || lat < 18.15 || lat > 55.8271) {
+    return true;
+  }
+  // Exclude Korean Peninsula and Japan (Kyushu, Okinawa, Western Honshu)
+  // while keeping Liaoning (Dandong ~40.1N) and Shandong/Zhejiang (<123.0E).
+  if (lat < 39.8 && lon > 123.2) {
+    return true;
+  }
+  // Exclude Taiwan Island across the Taiwan Strait (Fujian Pingtan <= 119.85E).
+  if (lon >= 119.9 && lon <= 122.3 && lat >= 21.8 && lat <= 25.4) {
+    return true;
+  }
+  // Exclude Northern Vietnam / Laos south-west of Guangxi & Yunnan borders
+  // while keeping Beihai/Zhanjiang (>=108.0E) and Hainan Island.
+  if (lat < 21.45 && lon < 108.0) {
+    return true;
+  }
+  return false;
 }
 
 ConversionResult wgs84_to_gcj02(Coordinate coordinate) noexcept {

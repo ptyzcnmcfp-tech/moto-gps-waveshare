@@ -67,6 +67,7 @@ struct NavSnapshot {
 
   bool has_destination = false;
   bool has_usable_fix = false;
+  bool has_valid_heading = false;
   bool gnss_stale = true;
   bool off_route = false;
   bool route_request_in_flight = false;
@@ -166,13 +167,17 @@ class NavCore {
 
   [[nodiscard]] bool valid_point(const Wgs84Point& point) const;
   [[nodiscard]] bool valid_point(const Gcj02Point& point) const;
+  [[nodiscard]] std::optional<Gcj02Point> to_route_datum(
+      const Wgs84Point& point) const;
   [[nodiscard]] bool usable_fix(const GnssFix& fix) const;
   [[nodiscard]] bool valid_route(const RouteBundle& route) const;
   [[nodiscard]] Projection project_onto_route(
       const Gcj02Point& point,
       double minimum_route_progress_m = 0.0,
       double maximum_route_progress_m =
-          std::numeric_limits<double>::infinity()) const;
+          std::numeric_limits<double>::infinity(),
+      std::optional<float> moving_heading_deg = std::nullopt,
+      std::optional<double> preferred_route_progress_m = std::nullopt) const;
   [[nodiscard]] double distance_m(const Gcj02Point& a,
                                   const Gcj02Point& b) const;
 

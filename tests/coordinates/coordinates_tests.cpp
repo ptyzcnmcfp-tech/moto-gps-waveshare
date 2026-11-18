@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 #include <limits>
 
 namespace {
@@ -64,6 +65,40 @@ void test_outside_coverage_passes_through() {
               paris.latitude_deg,
               0.0,
               "outside latitude is unchanged");
+
+  // Nearby overseas regions inside the legacy [72..137.8, 0.8..55.8] rectangle
+  // must NOT be warped by Mainland China GCJ-02 offsets.
+  for (const Coordinate overseas : {
+           Coordinate{135.5023, 34.6937},  // Osaka
+           Coordinate{130.4017, 33.5902},  // Fukuoka
+           Coordinate{127.6809, 26.2124},  // Okinawa
+           Coordinate{126.9780, 37.5665},  // Seoul
+           Coordinate{121.5654, 25.0330},  // Taipei
+           Coordinate{103.8198, 1.3521},   // Singapore
+           Coordinate{100.5018, 13.7563},  // Bangkok
+           Coordinate{105.8342, 21.0278},  // Hanoi
+       }) {
+    expect_true(is_outside_gcj02_coverage(overseas),
+                "overseas Asia point is outside GCJ-02 coverage");
+    const auto passthrough = wgs84_to_gcj02(overseas);
+    expect_near(passthrough.coordinate.longitude_deg, overseas.longitude_deg,
+                1e-7, "overseas Asia longitude stays unshifted");
+    expect_near(passthrough.coordinate.latitude_deg, overseas.latitude_deg,
+                1e-7, "overseas Asia latitude stays unshifted");
+  }
+
+  // Mainland border cities must remain inside GCJ-02 coverage.
+  for (const Coordinate mainland : {
+           Coordinate{134.7750, 48.3650},  // Fuyuan (Heilongjiang)
+           Coordinate{124.3830, 40.1290},  // Dandong (Liaoning)
+           Coordinate{122.7000, 37.4000},  // Chengshantou (Shandong)
+           Coordinate{122.2000, 30.0000},  // Zhoushan (Zhejiang)
+           Coordinate{118.0894, 24.4798},  // Xiamen (Fujian)
+           Coordinate{109.5119, 18.2528},  // Sanya (Hainan)
+       }) {
+    expect_true(!is_outside_gcj02_coverage(mainland),
+                "mainland border city stays inside GCJ-02 coverage");
+  }
 }
 
 void test_invalid_input_returns_status() {

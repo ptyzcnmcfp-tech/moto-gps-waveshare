@@ -229,6 +229,12 @@ int BleNavTransport::gap_event(ble_gap_event* event, void* argument) {
       } else {
         ESP_LOGW(kTag, "connection failed: status=%d",
                  event->connect.status);
+        self->connected_.store(false);
+        self->encrypted_.store(false);
+        self->subscribed_.store(false);
+        self->connection_handle_.store(kNoConnection);
+        self->session_id_.store(0);
+        self->connection_epoch_.fetch_add(1);
         self->advertise();
       }
       return 0;
@@ -300,6 +306,16 @@ int BleNavTransport::gap_event(ble_gap_event* event, void* argument) {
 
 void BleNavTransport::host_reset(int reason) {
   ESP_LOGE(kTag, "NimBLE host reset: reason=%d", reason);
+  BleNavTransport* self = active_instance_;
+  if (self != nullptr) {
+    self->connected_.store(false);
+    self->encrypted_.store(false);
+    self->subscribed_.store(false);
+    self->connection_handle_.store(kNoConnection);
+    self->peer_max_frame_size_.store(20);
+    self->session_id_.store(0);
+    self->connection_epoch_.fetch_add(1);
+  }
 }
 
 void BleNavTransport::host_sync() {
@@ -358,9 +374,11 @@ void BleNavTransport::run_rx_worker() {
   moto::esp32::ConnectionEpochGate epoch_gate(connection_epoch_.load(),
                                                connected_.load());
   bool protocol_ready = false;
+  bool pending_device_ready = false;
   bool has_observed_loss_epoch = false;
   bool resynchronizing_after_loss = false;
   std::uint32_t observed_loss_epoch = 0;
+  std::uint64_t last_adv_check_ms = 0;
   if (epoch_gate.connected()) {
     watchdog_.note_valid_frame(monotonic_ms());
     note_link(true);
@@ -368,8 +386,8 @@ void BleNavTransport::run_rx_worker() {
 
   RxPacket packet;
   const auto synchronize_connection_epoch =
-      [this, &epoch_gate, &protocol_ready, &has_observed_loss_epoch,
-       &resynchronizing_after_loss]() {
+      [this, &epoch_gate, &protocol_ready, &pending_device_ready,
+       &has_observed_loss_epoch, &resynchronizing_after_loss]() {
     const std::uint32_t current_epoch = connection_epoch_.load();
     if (!epoch_gate.synchronize(current_epoch, connected_.load())) {
       return;
@@ -377,6 +395,7 @@ void BleNavTransport::run_rx_worker() {
     reassembler_.reset();
     watchdog_.reset();
     protocol_ready = false;
+    pending_device_ready = false;
     has_observed_loss_epoch = false;
     resynchronizing_after_loss = false;
     has_last_rx_ack_ = false;
@@ -423,8 +442,9 @@ void BleNavTransport::run_rx_worker() {
       // START fragment before normal reassembly; subsequent fragments, if
       // any, are then assembled normally and the decoded session ID below
       // decides whether the protocol state itself must be replaced.
-      const moto::ble::FrameResult control_frame = moto::ble::decode_frame(
-          moto::ble::ByteView(packet.bytes, packet.length));
+      const moto::ble::FrameHeaderResult control_frame =
+          moto::ble::peek_frame_header(
+              moto::ble::ByteView(packet.bytes, packet.length));
       if (resynchronizing_after_loss && control_frame.ok()) {
         if ((control_frame.value.flags & moto::ble::FrameStart) == 0U) {
           continue;
@@ -545,20 +565,16 @@ void BleNavTransport::run_rx_worker() {
 
       if (phone_status != nullptr) {
         if (status == moto::ble::AckStatus::Unsupported) {
+          pending_device_ready = false;
           send_connection_status(moto::ble::ConnectionState::Closing);
         } else if (status == moto::ble::AckStatus::Ok) {
           if (phone_status->state == moto::ble::ConnectionState::Starting) {
-            // Canonical v1 handshake: advertise device capabilities first;
-            // display messages remain gated until Phone subsequently says
-            // Ready.
-            send_connection_status(moto::ble::ConnectionState::Ready);
+            pending_device_ready =
+                !send_connection_status(moto::ble::ConnectionState::Ready);
           } else if (phone_status->state ==
                      moto::ble::ConnectionState::Ready) {
-            // CoreBluetooth may restore an encrypted/subscribed bond and send
-            // Phone Ready as its first session frame. Always answer with the
-            // device capability/status message before opening the display-data
-            // gate, so the iOS side cannot wait forever for our status.
-            send_connection_status(moto::ble::ConnectionState::Ready);
+            pending_device_ready =
+                !send_connection_status(moto::ble::ConnectionState::Ready);
             protocol_ready = true;
           }
         }
@@ -566,6 +582,12 @@ void BleNavTransport::run_rx_worker() {
     }
 
     const std::uint64_t now = monotonic_ms();
+    if (pending_device_ready && session_id_.load() != 0 &&
+        connected_.load() && encrypted_.load() && subscribed_.load()) {
+      if (send_connection_status(moto::ble::ConnectionState::Ready)) {
+        pending_device_ready = false;
+      }
+    }
     service_pending_ack(now);
 
     bool awaiting_ack = false;
@@ -584,9 +606,19 @@ void BleNavTransport::run_rx_worker() {
     }
 
     if (epoch_gate.connected() && watchdog_.expired(now)) {
-      // Keep the physical BLE connection, but mark navigation stale until a
-      // valid frame resumes. This separates radio link from app liveness.
+      // Keep the physical BLE connection, mark navigation stale until a valid
+      // frame resumes, and notify the phone that our session state degraded so
+      // it immediately re-sends Ready + active route/map state upon waking.
+      watchdog_.reset();
       note_link(false);
+      send_connection_status(moto::ble::ConnectionState::Degraded);
+    }
+
+    if (started_ && !connected_.load() && now - last_adv_check_ms >= 2'000U) {
+      last_adv_check_ms = now;
+      if (ble_gap_adv_active() == 0) {
+        advertise();
+      }
     }
   }
 }
@@ -601,11 +633,11 @@ void BleNavTransport::note_link(bool active) {
   }
 }
 
-void BleNavTransport::send_connection_status(
+bool BleNavTransport::send_connection_status(
     moto::ble::ConnectionState state) {
   const std::uint32_t session_id = session_id_.load();
   if (session_id == 0) {
-    return;
+    return false;
   }
   moto::ble::ConnectionStatus status;
   status.role = moto::ble::EndpointRole::Device;
@@ -624,7 +656,7 @@ void BleNavTransport::send_connection_status(
   status.max_frame_size =
       static_cast<std::uint16_t>(negotiated_frame_size());
   status.heartbeat_interval_ms = 1'000;
-  send_message(moto::ble::Message{status}, moto::ble::Urgent);
+  return send_message(moto::ble::Message{status}, moto::ble::Urgent);
 }
 
 void BleNavTransport::send_ack(std::uint16_t sequence,

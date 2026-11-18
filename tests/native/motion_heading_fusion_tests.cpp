@@ -134,6 +134,20 @@ void test_stationary_freeze_holds_heading_until_riding_resumes() {
   CHECK(fusion.heading_deg() > 5.0F);
 }
 
+void test_active_gyro_turn_resists_delayed_phone_course_pullback() {
+  MotionHeadingFusion fusion;
+  fusion.anchor(0.0F, 12.0F, true);
+  // Rider executes a brisk 90 dps right turn for 600 ms (~50 deg).
+  feed_rate(fusion, 90.0F, 8, 608);
+  const float gyro_heading = fusion.heading_deg();
+  CHECK(gyro_heading > 40.0F);
+
+  // Delayed 1 Hz phone GPS course arrives still reporting 5 deg from the turn
+  // entry. It must NOT yank the map backward by 15-30 deg mid-turn.
+  fusion.anchor(5.0F, 12.0F, true);
+  CHECK(std::abs(fusion.heading_deg() - gyro_heading) < 3.0F);
+}
+
 }  // namespace
 
 int main() {
@@ -146,6 +160,7 @@ int main() {
   test_large_sensor_gap_is_not_integrated();
   test_stale_timestamp_does_not_rewind_integration_clock();
   test_stationary_freeze_holds_heading_until_riding_resumes();
+  test_active_gyro_turn_resists_delayed_phone_course_pullback();
 
   if (failures != 0) {
     std::cerr << failures << " motion heading checks failed\n";

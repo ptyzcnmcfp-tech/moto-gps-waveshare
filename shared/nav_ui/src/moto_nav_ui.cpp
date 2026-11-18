@@ -147,11 +147,19 @@ struct Ui {
     bool lifecycle_success_active = false;
     bool navigation_has_guidance = false;
     bool navigation_route_request_in_flight = false;
+    char nav_last_status_text[24]{};
+    std::uint32_t nav_last_status_rgb = ~std::uint32_t{0};
+    char nav_last_distance_text[16]{};
+    char nav_last_unit_text[8]{};
+    std::uint8_t nav_last_progress_percent = 255;
+    moto_traffic_t nav_last_traffic = static_cast<moto_traffic_t>(255);
+    std::uint16_t nav_last_limit_kph = ~std::uint16_t{0};
 
     lv_obj_t *speed_arc = nullptr;
     lv_obj_t *speed_value = nullptr;
     lv_obj_t *speed_ticks[kSpeedTickCount]{};
     lv_point_precise_t speed_tick_points[kSpeedTickCount][2]{};
+    std::uint16_t speed_last_kph = ~std::uint16_t{0};
 
     lv_obj_t *compass_heading = nullptr;
     lv_obj_t *compass_cardinal = nullptr;
@@ -159,6 +167,9 @@ struct Ui {
     lv_obj_t *compass_ticks[kCompassTickCount]{};
     lv_point_precise_t compass_tick_points[kCompassTickCount][2]{};
     lv_obj_t *compass_letters[4]{};
+    std::uint16_t compass_last_heading_deg = ~std::uint16_t{0};
+    std::uint16_t compass_last_speed_kph = ~std::uint16_t{0};
+    std::uint8_t compass_last_valid = 255;
 
     lv_obj_t *music_source = nullptr;
     lv_obj_t *music_title = nullptr;
@@ -204,6 +215,14 @@ void reset_ui_state() {
     ui.nav_route_identity = ~std::uint32_t{0};
     ui.nav_road_scene_revision = ~std::uint32_t{0};
     ui.nav_building_scene_revision = ~std::uint32_t{0};
+    ui.nav_last_status_rgb = ~std::uint32_t{0};
+    ui.nav_last_progress_percent = 255;
+    ui.nav_last_traffic = static_cast<moto_traffic_t>(255);
+    ui.nav_last_limit_kph = ~std::uint16_t{0};
+    ui.speed_last_kph = ~std::uint16_t{0};
+    ui.compass_last_heading_deg = ~std::uint16_t{0};
+    ui.compass_last_speed_kph = ~std::uint16_t{0};
+    ui.compass_last_valid = 255;
 }
 
 lv_obj_t *make_layer(lv_obj_t *parent) {
@@ -772,10 +791,15 @@ void update_route_geometry(const moto_ui_state_t *state) {
 
     // A new route or a wholesale reroute should appear immediately. Ordinary
     // GNSS/IMU updates are blended at 40 Hz so the road glides under the fixed
-    // rider marker instead of jumping from one phone fix to the next.
-    const bool snap = ui.nav_route_identity != state->route_identity ||
-                      ui.nav_route_generation != state->route_generation ||
-                      ui.nav_route_point_count != count || ui.reduce_motion;
+    // rider marker instead of jumping when horizon simplification adds or
+    // retires a single far vertex.
+    const std::uint8_t previous_count = ui.nav_route_point_count;
+    const bool route_changed =
+        ui.nav_route_identity != state->route_identity ||
+        ui.nav_route_generation != state->route_generation ||
+        previous_count < 2;
+    const bool count_changed = previous_count != count;
+    const bool snap = route_changed || ui.reduce_motion;
     ui.nav_route_target_count = count;
     ui.nav_route_point_count = count;
     ui.nav_route_identity = state->route_identity;
@@ -785,12 +809,17 @@ void update_route_geometry(const moto_ui_state_t *state) {
             ui.nav_route_x[i] = ui.nav_route_target_x[i];
             ui.nav_route_y[i] = ui.nav_route_target_y[i];
         }
+    } else if(count > previous_count) {
+        for(std::uint8_t i = previous_count; i < count; ++i) {
+            ui.nav_route_x[i] = ui.nav_route_target_x[i];
+            ui.nav_route_y[i] = ui.nav_route_target_y[i];
+        }
     }
 
     lv_obj_remove_flag(ui.nav_route_shadow, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(ui.nav_route, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(ui.nav_marker, LV_OBJ_FLAG_HIDDEN);
-    if(snap) apply_route_geometry_frame();
+    if(snap || count_changed) apply_route_geometry_frame();
 }
 
 lv_point_precise_t arrow_base(const lv_point_precise_t& previous,
@@ -1224,9 +1253,15 @@ void lifecycle_fade_out_complete(lv_anim_t *) {
         ui.lifecycle_visual = LifecycleVisual::Hidden;
         lv_obj_add_flag(ui.nav_lifecycle, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_opa(ui.nav_lifecycle, LV_OPA_COVER, 0);
+        if(ui.nav_lifecycle_timer != nullptr) {
+            lv_timer_pause(ui.nav_lifecycle_timer);
+        }
         return;
     }
     apply_lifecycle_content(ui.lifecycle_target);
+    if(ui.nav_lifecycle_timer != nullptr && !ui.reduce_motion) {
+        lv_timer_resume(ui.nav_lifecycle_timer);
+    }
     lifecycle_fade_in();
 }
 
@@ -1256,6 +1291,9 @@ void transition_lifecycle(LifecycleVisual next) {
         if(next == LifecycleVisual::Hidden) {
             ui.lifecycle_visual = LifecycleVisual::Hidden;
             lv_obj_add_flag(ui.nav_lifecycle, LV_OBJ_FLAG_HIDDEN);
+            if(ui.nav_lifecycle_timer != nullptr) {
+                lv_timer_pause(ui.nav_lifecycle_timer);
+            }
         } else {
             apply_lifecycle_content(next);
             lv_obj_remove_flag(ui.nav_lifecycle, LV_OBJ_FLAG_HIDDEN);
@@ -1267,6 +1305,9 @@ void transition_lifecycle(LifecycleVisual next) {
        lv_obj_has_flag(ui.nav_lifecycle, LV_OBJ_FLAG_HIDDEN)) {
         if(next == LifecycleVisual::Hidden) return;
         apply_lifecycle_content(next);
+        if(ui.nav_lifecycle_timer != nullptr) {
+            lv_timer_resume(ui.nav_lifecycle_timer);
+        }
         lifecycle_fade_in();
         return;
     }
@@ -1342,34 +1383,44 @@ void set_navigation_guidance_visible(bool visible) {
             lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    if(!visible) lv_obj_add_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
+    if(!visible) {
+        lv_obj_add_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
+        ui.nav_last_limit_kph = ~std::uint16_t{0};
+    }
 }
 
 void update_nav_status(const moto_ui_state_t *state) {
     const char *text = "";
     lv_color_t color = kQuiet;
     if(ui.demo_active) {
-        lv_label_set_text(ui.nav_status, "DEMO RIDE");
-        lv_obj_set_style_text_color(ui.nav_status, kWhite, 0);
-        return;
+        text = "DEMO RIDE";
+        color = kWhite;
+    } else if(state->mode == MOTO_UI_ARRIVED || state->route_point_count >= 2) {
+        switch(state->mode) {
+            case MOTO_UI_ACQUIRING_FIX: text = "ACQUIRING GPS"; color = kAmber; break;
+            case MOTO_UI_REROUTING: text = "REROUTING"; color = kAmber; break;
+            case MOTO_UI_OFFLINE: text = "ROUTE CACHED"; color = kQuiet; break;
+            case MOTO_UI_ARRIVED: text = "ARRIVED"; color = kGreen; break;
+            case MOTO_UI_NAVIGATING:
+                if(state->gnss_stale != 0) {
+                    text = "GPS SIGNAL LOST";
+                    color = kAmber;
+                } else if(state->online == 0) {
+                    text = "NO HOTSPOT";
+                }
+                break;
+        }
     }
-    if(state->mode != MOTO_UI_ARRIVED && state->route_point_count < 2) {
-        // Empty navigation states are rendered by the full lifecycle surface,
-        // never by a tiny diagnostic caption floating in a black screen.
-        lv_label_set_text(ui.nav_status, "");
-        return;
+    const std::uint32_t rgb = lv_color_to_u32(color);
+    if(std::strcmp(ui.nav_last_status_text, text) != 0) {
+        std::snprintf(ui.nav_last_status_text, sizeof(ui.nav_last_status_text),
+                      "%s", text);
+        lv_label_set_text(ui.nav_status, text);
     }
-    switch(state->mode) {
-        case MOTO_UI_ACQUIRING_FIX: text = "ACQUIRING GPS"; color = kAmber; break;
-        case MOTO_UI_REROUTING: text = "REROUTING"; color = kAmber; break;
-        case MOTO_UI_OFFLINE: text = "ROUTE CACHED"; color = kQuiet; break;
-        case MOTO_UI_ARRIVED: text = "ARRIVED"; color = kGreen; break;
-        case MOTO_UI_NAVIGATING:
-            if(state->online == 0) text = "NO HOTSPOT";
-            break;
+    if(ui.nav_last_status_rgb != rgb) {
+        ui.nav_last_status_rgb = rgb;
+        lv_obj_set_style_text_color(ui.nav_status, color, 0);
     }
-    lv_label_set_text(ui.nav_status, text);
-    lv_obj_set_style_text_color(ui.nav_status, color, 0);
 }
 
 void update_navigation(const moto_ui_state_t *state) {
@@ -1393,7 +1444,12 @@ void update_navigation(const moto_ui_state_t *state) {
 
     char value[16];
     const char *unit = "m";
-    if(state->distance_to_maneuver_m >= 1000) {
+    if(state->distance_to_maneuver_m >= 100'000) {
+        std::snprintf(value, sizeof(value), "%lu",
+                      static_cast<unsigned long>(
+                          std::lround(state->distance_to_maneuver_m / 1000.0)));
+        unit = "km";
+    } else if(state->distance_to_maneuver_m >= 1000) {
         std::snprintf(value, sizeof(value), "%.1f",
                       state->distance_to_maneuver_m / 1000.0);
         unit = "km";
@@ -1402,31 +1458,51 @@ void update_navigation(const moto_ui_state_t *state) {
                       static_cast<unsigned>(state->distance_to_maneuver_m));
     }
     if(state->mode == MOTO_UI_ARRIVED) std::snprintf(value, sizeof(value), "0");
-    lv_label_set_text(ui.nav_distance, value);
-    lv_label_set_text(ui.nav_unit, unit);
-    // This number is never the total trip distance. Its physical attachment to
-    // the maneuver glyph makes that meaning clear without an explanatory label.
-    lv_obj_align(ui.nav_distance, LV_ALIGN_TOP_LEFT, px(151), px(244));
-    lv_obj_align_to(ui.nav_unit, ui.nav_distance, LV_ALIGN_OUT_RIGHT_BOTTOM,
-                    px(6), px(-7));
+    if(std::strcmp(ui.nav_last_distance_text, value) != 0 ||
+       std::strcmp(ui.nav_last_unit_text, unit) != 0) {
+        std::snprintf(ui.nav_last_distance_text,
+                      sizeof(ui.nav_last_distance_text), "%s", value);
+        std::snprintf(ui.nav_last_unit_text, sizeof(ui.nav_last_unit_text),
+                      "%s", unit);
+        lv_label_set_text(ui.nav_distance, value);
+        lv_label_set_text(ui.nav_unit, unit);
+        // This number is never the total trip distance. Its physical attachment to
+        // the maneuver glyph makes that meaning clear without an explanatory label.
+        lv_obj_align(ui.nav_distance, LV_ALIGN_TOP_LEFT, px(151), px(244));
+        lv_obj_align_to(ui.nav_unit, ui.nav_distance,
+                        LV_ALIGN_OUT_RIGHT_BOTTOM, px(6), px(-7));
+    }
 
-    lv_arc_set_value(ui.nav_progress,
-                     std::min<int>(100, state->route_progress_percent));
-    lv_obj_set_style_arc_color(ui.nav_progress, traffic_color(state->traffic),
-                               LV_PART_INDICATOR);
+    const std::uint8_t clamped_progress =
+        std::min<std::uint8_t>(100, state->route_progress_percent);
+    if(ui.nav_last_progress_percent != clamped_progress) {
+        ui.nav_last_progress_percent = clamped_progress;
+        lv_arc_set_value(ui.nav_progress, clamped_progress);
+    }
+    if(ui.nav_last_traffic != state->traffic) {
+        ui.nav_last_traffic = state->traffic;
+        lv_obj_set_style_arc_color(ui.nav_progress,
+                                   traffic_color(state->traffic),
+                                   LV_PART_INDICATOR);
+    }
 
-    if(state->speed_limit_kph > 0) {
-        char limit[8];
-        std::snprintf(limit, sizeof(limit), "%u",
-                      static_cast<unsigned>(state->speed_limit_kph));
-        lv_label_set_text(ui.nav_limit_value, limit);
-        lv_obj_remove_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
+    if(ui.nav_last_limit_kph != state->speed_limit_kph) {
+        ui.nav_last_limit_kph = state->speed_limit_kph;
+        if(state->speed_limit_kph > 0) {
+            char limit[8];
+            std::snprintf(limit, sizeof(limit), "%u",
+                          static_cast<unsigned>(state->speed_limit_kph));
+            lv_label_set_text(ui.nav_limit_value, limit);
+            lv_obj_remove_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 }
 
 void update_speedometer(const moto_ui_state_t *state) {
+    if(ui.speed_last_kph == state->speed_kph) return;
+    ui.speed_last_kph = state->speed_kph;
     char value[8];
     std::snprintf(value, sizeof(value), "%u",
                   static_cast<unsigned>(state->speed_kph));
@@ -1440,17 +1516,42 @@ void update_speedometer(const moto_ui_state_t *state) {
 }
 
 void update_compass(const moto_ui_state_t *state) {
-    char heading[12];
-    std::snprintf(heading, sizeof(heading), "%03u°",
-                  static_cast<unsigned>(state->heading_deg));
-    lv_label_set_text(ui.compass_heading, heading);
-    lv_label_set_text(ui.compass_cardinal, cardinal_name(state->heading_deg));
+    const std::uint8_t valid =
+        (ui.demo_active || state->heading_valid != 0 ||
+         (ui.phone_connection == MOTO_UI_PHONE_ONLINE &&
+          (state->heading_deg != 0 || state->speed_kph != 0)))
+            ? 1U
+            : 0U;
+    const std::uint16_t display_heading = valid != 0 ? state->heading_deg : 0U;
+    if(ui.compass_last_heading_deg == display_heading &&
+       ui.compass_last_speed_kph == state->speed_kph &&
+       ui.compass_last_valid == valid) {
+        return;
+    }
+    const bool dial_changed =
+        ui.compass_last_heading_deg != display_heading ||
+        ui.compass_last_valid != valid;
+    ui.compass_last_heading_deg = display_heading;
+    ui.compass_last_speed_kph = state->speed_kph;
+    ui.compass_last_valid = valid;
+
+    if(valid != 0) {
+        char heading[12];
+        std::snprintf(heading, sizeof(heading), "%03u°",
+                      static_cast<unsigned>(display_heading));
+        lv_label_set_text(ui.compass_heading, heading);
+        lv_label_set_text(ui.compass_cardinal, cardinal_name(display_heading));
+    } else {
+        lv_label_set_text(ui.compass_heading, "---°");
+        lv_label_set_text(ui.compass_cardinal, "--");
+    }
     char speed[20];
     std::snprintf(speed, sizeof(speed), "%u km/h",
                   static_cast<unsigned>(state->speed_kph));
     lv_label_set_text(ui.compass_speed, speed);
 
-    const double heading_rad = state->heading_deg * kPi / 180.0;
+    if(!dial_changed) return;
+    const double heading_rad = display_heading * kPi / 180.0;
     for(int i = 0; i < kCompassTickCount; ++i) {
         const double angle = i * 15.0 * kPi / 180.0 - heading_rad;
         const double inner = px(i % 3 == 0 ? 138.0 : 145.0);
@@ -1464,7 +1565,8 @@ void update_compass(const moto_ui_state_t *state) {
         };
         lv_line_set_points_mutable(ui.compass_ticks[i],
                                    ui.compass_tick_points[i], 2);
-        lv_obj_set_style_line_color(ui.compass_ticks[i], i == 0 ? kAmber : kQuiet, 0);
+        lv_obj_set_style_line_color(ui.compass_ticks[i],
+                                    (i == 0 && valid != 0) ? kAmber : kQuiet, 0);
     }
 
     static const double bearings[4] = {0.0, 90.0, 180.0, 270.0};
@@ -1475,7 +1577,8 @@ void update_compass(const moto_ui_state_t *state) {
         const int y = static_cast<int>(px(180.0) - std::cos(angle) * px(112.0));
         lv_label_set_text(ui.compass_letters[i], letters[i]);
         lv_obj_set_pos(ui.compass_letters[i], x - px(14), y - px(10));
-        lv_obj_set_style_text_color(ui.compass_letters[i], i == 0 ? kAmber : kQuiet, 0);
+        lv_obj_set_style_text_color(ui.compass_letters[i],
+                                    (i == 0 && valid != 0) ? kAmber : kQuiet, 0);
     }
 }
 
@@ -1672,7 +1775,8 @@ void create_navigation_page() {
                                 LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(ui.nav_lifecycle_subtitle, LV_ALIGN_TOP_MID, 0, px(278));
 
-    ui.nav_lifecycle_timer = lv_timer_create(lifecycle_tick, 40, nullptr);
+    ui.nav_lifecycle_timer = lv_timer_create(lifecycle_tick,
+                                             kRouteMotionFrameMs, nullptr);
     ui.nav_success_timer = lv_timer_create(connection_success_timeout,
                                             kConnectionSuccessHoldMs,
                                             nullptr);
@@ -1964,6 +2068,22 @@ extern "C" void moto_nav_ui_show_power_off_screen(void) {
 }
 
 extern "C" void moto_nav_ui_create(void) {
+    if(ui.page_dots_timer != nullptr) {
+        lv_timer_delete(ui.page_dots_timer);
+        ui.page_dots_timer = nullptr;
+    }
+    if(ui.nav_route_motion_timer != nullptr) {
+        lv_timer_delete(ui.nav_route_motion_timer);
+        ui.nav_route_motion_timer = nullptr;
+    }
+    if(ui.nav_lifecycle_timer != nullptr) {
+        lv_timer_delete(ui.nav_lifecycle_timer);
+        ui.nav_lifecycle_timer = nullptr;
+    }
+    if(ui.nav_success_timer != nullptr) {
+        lv_timer_delete(ui.nav_success_timer);
+        ui.nav_success_timer = nullptr;
+    }
     reset_ui_state();
     ui.screen = lv_screen_active();
     lv_obj_clean(ui.screen);

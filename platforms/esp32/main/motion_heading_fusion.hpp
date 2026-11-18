@@ -55,10 +55,16 @@ class MotionHeadingFusion {
     }
 
     // A course is trustworthy only once the receiver is actually moving.
-    // Correct drift progressively to avoid a visible snap during a bend.
+    // While the handlebar gyroscope is actively rotating (>8 dps), phone GNSS
+    // course lags physical yaw by ~0.8-1.2 s; suppress pullback during active
+    // turns so delayed phone fixes never create a backward sawtooth snap.
     if (moving_course) {
       const float error = shortest_delta(phone, heading_deg_);
-      const float correction = std::abs(error) > 80.0F ? 0.65F : 0.28F;
+      const bool actively_turning = std::abs(filtered_rate_dps_) > 8.0F;
+      const float correction =
+          actively_turning
+              ? 0.03F
+              : (std::abs(error) > 80.0F ? 0.65F : 0.28F);
       heading_deg_ = normalize(heading_deg_ + error * correction);
     }
   }

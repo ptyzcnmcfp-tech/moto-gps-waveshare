@@ -328,10 +328,7 @@ Error validate(const RouteGeometry& value) {
   if (!valid_coordinate_system(value.coordinate_system)) {
     return Error::InvalidEnum;
   }
-  // Existing RouteBundle geometry is explicitly GCJ-02. WGS84 remains a
-  // defined enum value for other future point messages, not route geometry.
-  if (value.coordinate_system != CoordinateSystem::Gcj02 ||
-      value.route_token == 0 || value.route_generation == 0 ||
+  if (value.route_token == 0 || value.route_generation == 0 ||
       value.chunk_count == 0 || value.chunk_index >= value.chunk_count ||
       value.total_point_count == 0 || value.points.empty() ||
       value.total_point_count > kMaxRoutePointsPerChunk ||
@@ -405,10 +402,8 @@ Error validate(const MediaState& value) {
 }
 
 Error validate(const MapScene& value) {
-  if (value.coordinate_system != CoordinateSystem::Gcj02) {
-    return valid_coordinate_system(value.coordinate_system)
-               ? Error::OutOfRange
-               : Error::InvalidEnum;
+  if (!valid_coordinate_system(value.coordinate_system)) {
+    return Error::InvalidEnum;
   }
   if (value.scene_revision == 0 || value.radius_m < 100 ||
       value.radius_m > 1'500 || !valid_geo_point(value.view_origin)) {
@@ -1073,6 +1068,43 @@ FrameResult decode_frame(ByteView bytes) {
   return {std::move(frame), Error::None, 0};
 }
 
+FrameHeaderResult peek_frame_header(ByteView bytes) noexcept {
+  if (bytes.size > 0 && bytes.data == nullptr) {
+    return {{}, Error::InvalidArgument, 0};
+  }
+  if (bytes.size < kFrameOverhead) {
+    return {{}, Error::FrameTooShort, bytes.size};
+  }
+  if (bytes.size > kMaxBleAttributeValueSize) {
+    return {{}, Error::FrameTooLarge, bytes.size};
+  }
+  if (bytes.data[0] != kFrameMagic) {
+    return {{}, Error::BadMagic, 0};
+  }
+  if (bytes.data[1] != kProtocolVersion) {
+    return {{}, Error::UnsupportedVersion, 1};
+  }
+  FrameHeader header;
+  header.version = bytes.data[1];
+  header.type = static_cast<MessageType>(bytes.data[2]);
+  header.flags = bytes.data[3];
+  header.sequence = static_cast<std::uint16_t>(bytes.data[4]) |
+                    (static_cast<std::uint16_t>(bytes.data[5]) << 8U);
+  header.fragment_offset =
+      static_cast<std::uint16_t>(bytes.data[6]) |
+      (static_cast<std::uint16_t>(bytes.data[7]) << 8U);
+  header.message_length =
+      static_cast<std::uint16_t>(bytes.data[8]) |
+      (static_cast<std::uint16_t>(bytes.data[9]) << 8U);
+  if ((header.flags & ~kKnownFrameFlags) != 0U) {
+    return {{}, Error::ReservedFlags, 3};
+  }
+  if (header.sequence == 0) {
+    return {{}, Error::SequenceZero, 4};
+  }
+  return {header, Error::None, 0};
+}
+
 FramesResult fragment_message(MessageType type,
                               std::uint16_t sequence,
                               ByteView payload,
@@ -1285,7 +1317,7 @@ ReassemblyResult Reassembler::push(ByteView encoded_frame,
   result.message.version = active_version_;
   result.message.flags = active_application_flags_;
   result.message.sequence = active_sequence_;
-  result.message.payload = std::move(buffer_);
+  result.message.payload.assign(buffer_.begin(), buffer_.end());
   last_sequence_ = active_sequence_;
   has_last_sequence_ = true;
   clear_active();

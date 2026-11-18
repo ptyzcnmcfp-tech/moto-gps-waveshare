@@ -585,6 +585,28 @@ void test_link_watchdog() {
   CHECK(watchdog.expired(8'000));
   watchdog.reset();
   CHECK(!watchdog.armed());
+
+  // WGS84 geometry and MapScene must also round-trip cleanly alongside GCJ-02,
+  // and peek_frame_header must match decode_frame without payload allocation.
+  RouteGeometry wgs_geom = geometry_fixture();
+  wgs_geom.coordinate_system = CoordinateSystem::Wgs84;
+  const Bytes encoded_wgs_geom = encode_or_fail(Message{wgs_geom});
+  const auto decoded_wgs_geom =
+      decode_message(MessageType::RouteGeometry, ByteView(encoded_wgs_geom));
+  CHECK(decoded_wgs_geom.ok());
+
+  MapScene wgs_scene = map_scene_fixture();
+  wgs_scene.coordinate_system = CoordinateSystem::Wgs84;
+  const Bytes encoded_wgs_scene = encode_or_fail(Message{wgs_scene});
+  CHECK(decode_message(MessageType::MapScene, ByteView(encoded_wgs_scene)).ok());
+
+  const auto frames = fragment_or_fail(MessageType::RouteGeometry, 42,
+                                       encoded_wgs_geom, 64, Urgent);
+  const auto peeked = peek_frame_header(ByteView(frames.front()));
+  CHECK(peeked.ok());
+  CHECK(peeked.value.type == MessageType::RouteGeometry);
+  CHECK(peeked.value.sequence == 42);
+  CHECK((peeked.value.flags & FrameStart) != 0U);
 }
 
 }  // namespace

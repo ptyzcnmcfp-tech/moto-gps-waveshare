@@ -413,6 +413,49 @@ void test_diagonal_map_pixels_are_independent_of_partial_buffer_height() {
   CHECK(draw_with_buffer(short_buffer) == tall_frame);
 }
 
+void test_stale_gnss_long_distance_and_invalid_compass() {
+  moto_nav_ui_set_reduce_motion(1);
+  moto_nav_ui_set_phone_connection(MOTO_UI_PHONE_ONLINE);
+
+  moto_ui_state_t live = base_state();
+  fill_route(live, 12);
+  moto_nav_ui_set_state(&live);
+  pump(260);  // finish transient connected splash before comparing guidance frames
+  const Frame live_frame = capture();
+
+  moto_ui_state_t stale = live;
+  stale.gnss_stale = 1;
+  moto_nav_ui_set_state(&stale);
+  const Frame stale_frame = capture();
+  CHECK(stale_frame.hash != live_frame.hash);
+
+  // Clearing gnss_stale must restore the exact normal navigation frame.
+  moto_nav_ui_set_state(&live);
+  CHECK(capture().hash == live_frame.hash);
+
+  // >= 100 km maneuvers render integer km rather than overflowing the right badge.
+  moto_ui_state_t long_leg = live;
+  long_leg.distance_to_maneuver_m = 274'600;
+  moto_nav_ui_set_state(&long_leg);
+  const Frame long_frame = capture();
+  CHECK(long_frame.hash != live_frame.hash);
+
+  // Offline compass with invalid heading must visibly differ from 000° North.
+  moto_nav_ui_set_phone_connection(MOTO_UI_PHONE_OFFLINE);
+  moto_ui_state_t invalid_compass{};
+  invalid_compass.page = MOTO_UI_PAGE_COMPASS;
+  invalid_compass.heading_deg = 0;
+  invalid_compass.heading_valid = 0;
+  moto_nav_ui_set_state(&invalid_compass);
+  const Frame uncalibrated = capture();
+
+  moto_ui_state_t valid_north = invalid_compass;
+  valid_north.heading_valid = 1;
+  moto_nav_ui_set_state(&valid_north);
+  const Frame calibrated_north = capture();
+  CHECK(uncalibrated.hash != calibrated_north.hash);
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -440,6 +483,7 @@ int main(int argc, char **argv) {
   test_capacity_payloads_render_stably();
   test_motion_frames_interpolate_then_settle_without_residue();
   test_diagonal_map_pixels_are_independent_of_partial_buffer_height();
+  test_stale_gnss_long_distance_and_invalid_compass();
 
   // Terminal screens run last: they tear the full UI down.
   moto_nav_ui_show_boot_screen();

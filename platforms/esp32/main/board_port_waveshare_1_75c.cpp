@@ -238,7 +238,7 @@ esp_err_t initialize_hidden_panel(std::size_t maximum_transfer_size,
   io_config.cs_gpio_num = BSP_LCD_CS;
   io_config.dc_gpio_num = -1;
   io_config.spi_mode = 0;
-  io_config.pclk_hz = 40 * 1'000 * 1'000;
+  io_config.pclk_hz = 80 * 1'000 * 1'000;
   io_config.trans_queue_depth = CONFIG_BSP_LCD_TRANS_QUEUE_DEPTH;
   io_config.lcd_cmd_bits = 32;
   io_config.lcd_param_bits = 8;
@@ -427,11 +427,11 @@ void IRAM_ATTR lcd_te_gpio_isr(void*) {
     return;
   }
 
-  // The edge that ends the short VBlank pulse and returns to the long idle
-  // level is the start of active scan.  If high is short this is falling;
-  // if low is short this is rising.
+  // Gate on the leading edge of the short VBlank pulse so CPU cache flush and
+  // QSPI DMA start during vertical blanking rather than after row 0 scanout
+  // has already begun.
   const std::int8_t candidate_active_level =
-      state.high_duration_us < state.low_duration_us ? 0 : 1;
+      state.high_duration_us < state.low_duration_us ? 1 : 0;
   if (current_level != candidate_active_level) {
     portEXIT_CRITICAL_ISR(&te_sync_lock);
     return;
