@@ -4,8 +4,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <utility>
+#include <vector>
 
 #define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
@@ -30,6 +32,23 @@ constexpr double kFixtureEarthRadiusM = 6'371'000.0;
 constexpr const auto& kFixtureGeometry =
     moto::demo::jinan_big_data::kRouteWgs84;
 
+constexpr std::size_t kMaxWebRoutePoints = 32'768;
+constexpr std::size_t kMaxWebManeuvers = 1'024;
+constexpr std::size_t kMaxWebTrafficSegments = 4'096;
+
+struct WebScenePolyline {
+  std::uint8_t feature_class = 0;
+  std::vector<Gcj02Point> points;
+};
+
+struct WebMapScene {
+  bool active = false;
+  bool is_wgs84 = false;
+  std::uint32_t revision = 0;
+  std::vector<WebScenePolyline> roads;
+  std::vector<WebScenePolyline> buildings;
+};
+
 NavApp app;
 NavPresenter presenter;
 TimestampMs now_ms = 1'000;
@@ -43,6 +62,11 @@ RouteBundle live_route_builder;
 std::uint32_t live_route_request_id = 0;
 TrafficSnapshot live_traffic_builder;
 std::uint32_t live_traffic_request_id = 0;
+
+WebMapScene active_scene;
+WebMapScene staging_scene;
+// Datum of the route NavCore is following; scene context must match it.
+bool active_route_is_wgs84 = false;
 
 double fixture_route_distance();
 double fixture_maneuver_offset(
@@ -76,6 +100,69 @@ EM_JS(void, emit_live_traffic_request,
   }
 });
 
+EM_JS(void, emit_music_command, (int command), {
+  const bridge = globalThis.MotoNavLiveBridge;
+  if (bridge && typeof bridge.onMusicCommand === "function") {
+    bridge.onMusicCommand(command);
+  }
+});
+
+// Mirrors PhoneNavBridge::apply_map_scene on the ESP32: scene points stay in
+// provider coordinates and NavPresenter applies the same rider-centred,
+// heading-up transform it uses for the route. Never pre-rotate here.
+void apply_web_map_scene(NavSnapshot& snapshot) {
+  // Firmware only accepts GCJ-02 scenes; a datum mismatch would draw streets
+  // hundreds of metres away from the route, so show no context instead.
+  if (!active_scene.active || active_scene.is_wgs84 != active_route_is_wgs84) {
+    return;
+  }
+
+  snapshot.map_scene_revision = active_scene.revision;
+  snapshot.road_context_point_count = 0;
+  snapshot.road_context_polyline_count = 0;
+  for (const auto& road : active_scene.roads) {
+    if (road.points.size() < 2 ||
+        snapshot.road_context_polyline_count >= kRoadContextPolylineCapacity) {
+      continue;
+    }
+    const std::size_t remaining =
+        kRoadContextPointCapacity - snapshot.road_context_point_count;
+    if (remaining < 2) break;
+    const auto count = static_cast<std::uint8_t>(
+        std::min<std::size_t>(road.points.size(), remaining));
+    const auto first = snapshot.road_context_point_count;
+    std::copy_n(road.points.begin(), count,
+                snapshot.road_context_points.begin() + first);
+    snapshot.road_context_point_count =
+        static_cast<std::uint8_t>(first + count);
+    snapshot.road_context_polylines[snapshot.road_context_polyline_count++] = {
+        first, count, static_cast<RoadContextClass>(road.feature_class)};
+  }
+  snapshot.has_road_context = snapshot.road_context_polyline_count > 0;
+
+  snapshot.building_context_point_count = 0;
+  snapshot.building_context_footprint_count = 0;
+  for (const auto& building : active_scene.buildings) {
+    if (building.points.size() < 3 ||
+        snapshot.building_context_footprint_count >=
+            kBuildingContextFootprintCapacity ||
+        snapshot.building_context_point_count + building.points.size() >
+            kBuildingContextPointCapacity) {
+      continue;
+    }
+    const auto first = snapshot.building_context_point_count;
+    const auto count = static_cast<std::uint8_t>(building.points.size());
+    std::copy_n(building.points.begin(), count,
+                snapshot.building_context_points.begin() + first);
+    snapshot.building_context_point_count =
+        static_cast<std::uint8_t>(first + count);
+    snapshot.building_context_footprints
+        [snapshot.building_context_footprint_count++] = {
+        first, count, static_cast<BuildingContextClass>(building.feature_class)};
+  }
+  snapshot.has_building_context = snapshot.building_context_footprint_count > 0;
+}
+
 void frame(void*) { lv_timer_handler(); }
 
 void present_snapshot(const NavSnapshot& snapshot, void* context) {
@@ -83,20 +170,15 @@ void present_snapshot(const NavSnapshot& snapshot, void* context) {
   NavSnapshot presented = lifecycle_preview_active
                               ? lifecycle_preview_snapshot
                               : snapshot;
-  // The browser demo renders the same traceable OSM fixture in a web-only
-  // canvas layer, including road classes and building footprints. Suppress
-  // this legacy, unclassified copy so streets are not double-brightened.
-  if (presented.route_id == moto::demo::jinan_big_data::kRouteId) {
-    presented.has_road_context = false;
-    presented.road_context_point_count = 0;
-    presented.road_context_polyline_count = 0;
+  if (!lifecycle_preview_active && active_scene.active) {
+    apply_web_map_scene(presented);
   }
   target->update(presented);
   target->apply_to_lvgl();
 }
 
 DisplayPage display_page_from_ui(moto_ui_page_t page) {
-  switch(page) {
+  switch (page) {
     case MOTO_UI_PAGE_SPEED: return DisplayPage::Speed;
     case MOTO_UI_PAGE_COMPASS: return DisplayPage::Compass;
     case MOTO_UI_PAGE_MUSIC: return DisplayPage::Music;
@@ -111,6 +193,10 @@ void page_change_requested(moto_ui_page_t page, void*) {
   app.handle(DisplayPageSelected{display_page_from_ui(page)});
 }
 
+void music_command_requested(moto_music_command_t command, void*) {
+  emit_music_command(static_cast<int>(command));
+}
+
 GnssFix fixture_fix(Wgs84Point point, float speed_mps, float heading_deg) {
   now_ms += 500;
   return {point, 4.0F, speed_mps, heading_deg, now_ms};
@@ -121,7 +207,7 @@ RouteBundle fixture_route() {
   route.route_id = moto::demo::jinan_big_data::kRouteId;
   route.polyline.assign(moto::demo::jinan_big_data::kRoute.begin(),
                         moto::demo::jinan_big_data::kRoute.end());
-  for(const auto& maneuver : moto::demo::jinan_big_data::kManeuvers) {
+  for (const auto& maneuver : moto::demo::jinan_big_data::kManeuvers) {
     route.maneuvers.push_back({
         maneuver.id,
         maneuver.type,
@@ -240,7 +326,7 @@ float segment_heading(Wgs84Point start, Wgs84Point end) {
                    std::sin(latitude_a) * std::cos(latitude_b) *
                        std::cos(delta_longitude);
   double heading = degrees(std::atan2(y, x));
-  if(heading < 0.0) heading += 360.0;
+  if (heading < 0.0) heading += 360.0;
   return static_cast<float>(heading);
 }
 
@@ -257,7 +343,7 @@ double fixture_distance(Wgs84Point start, Wgs84Point end) {
 const std::array<double, kFixtureGeometry.size()>& fixture_cumulative() {
   static const auto cumulative = [] {
     std::array<double, kFixtureGeometry.size()> values{};
-    for(std::size_t index = 1; index < values.size(); ++index) {
+    for (std::size_t index = 1; index < values.size(); ++index) {
       values[index] = values[index - 1] +
                       fixture_distance(kFixtureGeometry[index - 1],
                                        kFixtureGeometry[index]);
@@ -283,8 +369,8 @@ Wgs84Point fixture_point(double route_offset_m) {
   const auto& cumulative = fixture_cumulative();
   const double offset = std::clamp(route_offset_m, 0.0, cumulative.back());
   auto upper = std::upper_bound(cumulative.begin(), cumulative.end(), offset);
-  if(upper == cumulative.begin()) return kFixtureGeometry.front();
-  if(upper == cumulative.end()) return kFixtureGeometry.back();
+  if (upper == cumulative.begin()) return kFixtureGeometry.front();
+  if (upper == cumulative.end()) return kFixtureGeometry.back();
   const std::size_t end_index = static_cast<std::size_t>(
       upper - cumulative.begin());
   const std::size_t start_index = end_index - 1;
@@ -304,8 +390,8 @@ FixtureSample fixture_sample(int progress) {
                                   fixture_point(route_offset_m + 11.0));
   heading += static_cast<float>(heading_offset_deg) +
              static_cast<float>(std::sin(normalized * kPi * 8.0) * 1.8);
-  while(heading < 0.0F) heading += 360.0F;
-  while(heading >= 360.0F) heading -= 360.0F;
+  while (heading < 0.0F) heading += 360.0F;
+  while (heading >= 360.0F) heading -= 360.0F;
   const float speed = clamped >= 99
                           ? 0.0F
                           : static_cast<float>(14.0 +
@@ -318,6 +404,7 @@ FixtureSample fixture_sample(int progress) {
 }
 
 void establish_fixture_route() {
+  active_route_is_wgs84 = false;  // The Jinan fixture route is GCJ-02.
   pending_route_request_id = 0;
   app.handle(Reset{});
   app.handle(NetworkChanged{NetworkState::Online});
@@ -347,17 +434,21 @@ void feed_progress(int progress) {
 
 extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_initialize(void) {
   live_mode = true;
+  lifecycle_preview_active = false;
   pending_route_request_id = 0;
   live_route_builder = {};
   live_route_request_id = 0;
   live_traffic_builder = {};
   live_traffic_request_id = 0;
+  active_scene = {};
+  staging_scene = {};
   app.handle(Reset{});
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_start(
     double destination_latitude, double destination_longitude) {
   live_mode = true;
+  lifecycle_preview_active = false;
   app.handle(BeginNavigation{{destination_latitude, destination_longitude}});
   app.handle(DisplayPageSelected{DisplayPage::Navigation});
 }
@@ -369,6 +460,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_cancel(void) {
   live_route_request_id = 0;
   live_traffic_builder = {};
   live_traffic_request_id = 0;
+  active_scene = {};
+  staging_scene = {};
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_set_network(int online) {
@@ -389,9 +482,11 @@ extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_fix(
   fix.speed_mps = std::isfinite(speed_mps)
                       ? static_cast<float>(std::max(0.0, speed_mps))
                       : 0.0F;
+  // NaN tells NavCore "no course over ground": it keeps the previous
+  // heading without marking it freshly valid, exactly like the firmware path.
   fix.heading_deg = std::isfinite(heading_deg)
                         ? static_cast<float>(heading_deg)
-                        : app.snapshot().heading_deg;
+                        : std::numeric_limits<float>::quiet_NaN();
   fix.timestamp_ms = live_timestamp(timestamp_ms);
   dispatch_live_commands(app.handle(GnssFixReceived{fix}));
 }
@@ -414,10 +509,18 @@ extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_route_begin(
   live_route_builder.generated_at_ms = live_timestamp(generated_at_ms);
 }
 
+extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_route_set_datum(
+    int is_wgs84) {
+  if (live_route_request_id == 0) return;
+  live_route_builder.coordinate_system =
+      is_wgs84 != 0 ? RouteCoordinateSystem::Wgs84
+                    : RouteCoordinateSystem::Gcj02;
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_route_add_point(
     double latitude, double longitude) {
   if (live_route_request_id == 0 ||
-      live_route_builder.polyline.size() >= 8192) {
+      live_route_builder.polyline.size() >= kMaxWebRoutePoints) {
     return;
   }
   live_route_builder.polyline.push_back({latitude, longitude});
@@ -427,7 +530,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_route_add_maneuver(
     std::uint32_t id, int type, double route_offset_m,
     const char* road_name, const char* instruction, int roundabout_exit) {
   if (live_route_request_id == 0 ||
-      live_route_builder.maneuvers.size() >= 512) {
+      live_route_builder.maneuvers.size() >= kMaxWebManeuvers) {
     return;
   }
   Maneuver maneuver;
@@ -444,7 +547,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_route_add_maneuver(
 extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_route_add_traffic(
     double start_offset_m, double end_offset_m, int level) {
   if (live_route_request_id == 0 ||
-      live_route_builder.traffic.size() >= 2048) {
+      live_route_builder.traffic.size() >= kMaxWebTrafficSegments) {
     return;
   }
   live_route_builder.traffic.push_back(
@@ -456,6 +559,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_route_commit(
   if (live_route_request_id == 0) return;
   const std::uint32_t request_id = live_route_request_id;
   live_route_request_id = 0;
+  active_route_is_wgs84 =
+      live_route_builder.coordinate_system == RouteCoordinateSystem::Wgs84;
   app.handle(RouteReady{request_id, std::move(live_route_builder),
                         live_timestamp(received_at_ms)});
   live_route_builder = {};
@@ -482,7 +587,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_traffic_begin(
 extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_traffic_add_segment(
     double start_offset_m, double end_offset_m, int level) {
   if (live_traffic_request_id == 0 ||
-      live_traffic_builder.segments.size() >= 2048) {
+      live_traffic_builder.segments.size() >= kMaxWebTrafficSegments) {
     return;
   }
   live_traffic_builder.segments.push_back(
@@ -503,6 +608,82 @@ extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_traffic_failed(
   live_traffic_builder = {};
   app.handle(TrafficUpdateFailed{request_id,
                                  live_timestamp(received_at_ms)});
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_scene_begin(
+    std::uint32_t revision, int is_wgs84) {
+  staging_scene = {};
+  staging_scene.active = true;
+  staging_scene.revision = revision;
+  staging_scene.is_wgs84 = is_wgs84 != 0;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_scene_add_road(
+    int road_class) {
+  if (!staging_scene.active ||
+      staging_scene.roads.size() >= kRoadContextPolylineCapacity) {
+    return;
+  }
+  WebScenePolyline polyline;
+  polyline.feature_class = static_cast<std::uint8_t>(std::clamp(road_class, 0, 5));
+  staging_scene.roads.push_back(std::move(polyline));
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_scene_add_road_point(
+    double latitude, double longitude) {
+  if (!staging_scene.active || staging_scene.roads.empty() ||
+      staging_scene.roads.back().points.size() >= 192) {
+    return;
+  }
+  staging_scene.roads.back().points.push_back({latitude, longitude});
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_scene_add_building(
+    int building_class) {
+  if (!staging_scene.active ||
+      staging_scene.buildings.size() >= kBuildingContextFootprintCapacity) {
+    return;
+  }
+  WebScenePolyline footprint;
+  footprint.feature_class =
+      static_cast<std::uint8_t>(std::clamp(building_class, 0, 2));
+  staging_scene.buildings.push_back(std::move(footprint));
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_scene_add_building_point(
+    double latitude, double longitude) {
+  if (!staging_scene.active || staging_scene.buildings.empty() ||
+      staging_scene.buildings.back().points.size() >= 128) {
+    return;
+  }
+  staging_scene.buildings.back().points.push_back({latitude, longitude});
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_scene_commit(void) {
+  if (!staging_scene.active) return;
+  active_scene = std::move(staging_scene);
+  staging_scene = {};
+  app.present();
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_live_scene_clear(void) {
+  active_scene = {};
+  staging_scene = {};
+  app.present();
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_set_music_state(
+    const char* source_name, const char* track_title, const char* artist_name,
+    int connected, int playing, int like_available, int liked) {
+  moto_music_state_t state{};
+  state.source_name = source_name;
+  state.track_title = track_title;
+  state.artist_name = artist_name;
+  state.connected = connected != 0 ? 1U : 0U;
+  state.playing = playing != 0 ? 1U : 0U;
+  state.like_available = like_available != 0 ? 1U : 0U;
+  state.liked = liked != 0 ? 1U : 0U;
+  moto_nav_ui_set_music_state(&state);
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE int moto_web_live_get_nav_state(void) {
@@ -571,8 +752,16 @@ extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_set_phone_connection(
   const int normalized = std::clamp(
       connection, static_cast<int>(MOTO_UI_PHONE_OFFLINE),
       static_cast<int>(MOTO_UI_PHONE_ONLINE));
+  if (normalized == static_cast<int>(MOTO_UI_PHONE_OFFLINE)) {
+    // Match ESP32 PhoneNavBridge disconnect cleanup: never retain stale guidance
+    // on screen after the BLE link drops.
+    app.handle(Reset{});
+    active_scene = {};
+    staging_scene = {};
+  }
   moto_nav_ui_set_phone_connection(
       static_cast<moto_ui_phone_connection_t>(normalized));
+  app.present();
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_set_scenario(int scenario) {
@@ -673,13 +862,13 @@ extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_set_page(int page) {
 
 extern "C" EMSCRIPTEN_KEEPALIVE void moto_web_set_heading_offset(int degrees) {
   heading_offset_deg = std::clamp(degrees, -90, 90);
-  if(app.snapshot().state != NavState::Arrived) {
+  if (app.snapshot().state != NavState::Arrived) {
     feed_progress(current_progress);
   }
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE int moto_web_get_page(void) {
-  switch(app.snapshot().display_page) {
+  switch (app.snapshot().display_page) {
     case DisplayPage::Speed: return MOTO_UI_PAGE_SPEED;
     case DisplayPage::Compass: return MOTO_UI_PAGE_COMPASS;
     case DisplayPage::Music: return MOTO_UI_PAGE_MUSIC;
@@ -701,6 +890,7 @@ int main() {
 
   app.set_presenter(present_snapshot, &presenter);
   moto_nav_ui_set_page_change_callback(page_change_requested, nullptr);
+  moto_nav_ui_set_music_command_callback(music_command_requested, nullptr);
   app.present();
 
   emscripten_set_main_loop_timing(EM_TIMING_RAF, 1);

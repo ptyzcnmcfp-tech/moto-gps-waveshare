@@ -859,6 +859,319 @@ button {
   }
 }
 
+/* Header actions and simulator entry */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sim-shortcut {
+  min-height: 30px;
+  padding: 0 12px;
+  color: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-raised);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+/* Shared pill rows: origins, quick searches, preferences, pages, speeds */
+.sim-origins,
+.quick-searches,
+.preference-chips,
+.page-pills,
+.speed-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.sim-origins {
+  /* Sits inside the .location-card grid: always take a full row. */
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.quick-searches {
+  margin: -6px 0 18px;
+}
+
+.preference-chips {
+  margin: 18px 0 0;
+}
+
+.page-pills {
+  justify-content: center;
+  margin: 12px 0 4px;
+}
+
+.sim-origins button,
+.quick-searches button,
+.preference-chips button,
+.page-pills button,
+.speed-group button {
+  min-height: 32px;
+  padding: 0 12px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sim-origins button:hover,
+.quick-searches button:hover,
+.preference-chips button:hover,
+.page-pills button:hover,
+.speed-group button:hover {
+  color: var(--paper);
+  border-color: #46504e;
+}
+
+.preference-chips button.is-active,
+.page-pills button.is-active,
+.speed-group button.is-active {
+  color: var(--ink);
+  border-color: var(--paper);
+  background: var(--paper);
+}
+
+:is(.sim-origins, .quick-searches, .preference-chips, .page-pills, .speed-group, .sim-transport) button:focus-visible,
+.sim-shortcut:focus-visible,
+.route-option-card:focus-visible {
+  outline: 2px solid var(--ice);
+  outline-offset: 2px;
+}
+
+/* Route candidates */
+.route-options-list {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  /* Leave room above the fixed start button. */
+  padding-bottom: 76px;
+}
+
+.route-option-card {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 14px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.route-option-card.is-selected {
+  border-color: var(--ice);
+  background: rgba(92, 199, 255, 0.07);
+}
+
+.route-option-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.route-option-top strong {
+  font-size: 14px;
+}
+
+.route-option-top span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.route-option-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.route-option-badges em {
+  padding: 3px 8px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.route-option-badges em[data-tone="good"] {
+  color: var(--green);
+  border-color: rgba(115, 230, 164, 0.35);
+}
+
+.route-option-badges em[data-tone="warn"] {
+  color: var(--amber);
+  border-color: rgba(255, 183, 46, 0.35);
+}
+
+.route-option-badges em[data-tone="info"] {
+  color: var(--ice);
+  border-color: rgba(92, 199, 255, 0.35);
+}
+
+/* Track replay workbench */
+.sim-view {
+  padding-bottom: calc(28px + var(--safe-bottom));
+}
+
+.sim-header h1 {
+  margin: 0 0 10px;
+  font-size: clamp(28px, 8vw, 38px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+
+.sim-header > p:last-child {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.instrument--sim {
+  margin: 22px auto 6px;
+}
+
+.instrument--sim .screen-ring {
+  width: min(84vw, 380px);
+}
+
+.sim-controls {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.sim-controls > label {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.sim-controls select {
+  width: 100%;
+  min-height: 42px;
+  margin-top: -6px;
+  padding: 0 12px;
+  color: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-raised);
+  font: inherit;
+  font-size: 13px;
+}
+
+.sim-transport {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.primary-pill {
+  min-height: 40px;
+  padding: 0 20px;
+  color: var(--ink);
+  border: 0;
+  border-radius: 999px;
+  background: var(--paper);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.sim-scrubber input[type="range"] {
+  width: 100%;
+  accent-color: var(--ice);
+}
+
+.sim-scrubber-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.sim-scrubber-meta span:first-child {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.sim-scrubber-meta span:last-child {
+  text-align: right;
+}
+
+.sim-telemetry {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--line);
+}
+
+.sim-telemetry > div {
+  padding: 12px 4px 0;
+}
+
+.sim-telemetry > div + div {
+  border-left: 1px solid var(--line);
+  padding-left: 10px;
+}
+
+.sim-telemetry span,
+.sim-telemetry strong {
+  display: block;
+}
+
+.sim-telemetry span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.sim-telemetry strong {
+  margin-top: 5px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 400px) {
+  .sim-telemetry {
+    grid-template-columns: repeat(2, 1fr);
+    row-gap: 12px;
+  }
+
+  .sim-telemetry > div:nth-child(3) {
+    border-left: 0;
+    padding-left: 4px;
+  }
+
+  .sim-shortcut {
+    padding: 0 10px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

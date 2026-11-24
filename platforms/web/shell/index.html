@@ -6,77 +6,103 @@
     <meta name="theme-color" content="#070909" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="description" content="MOTO GPS 手机前台实时导航：高德路线、偏航重算、路况刷新和共享 LVGL 圆屏界面。" />
-    <link rel="manifest" href="./manifest.webmanifest?v=20260902-live1" />
-    <link rel="stylesheet" href="./styles.css?v=20260905-realmap1" />
-    <title>MOTO GPS · 手机导航</title>
-    <script src="./map-scene-overlay.js?v=20260905-realmap1" defer></script>
-    <script src="./app.js?v=20260905-realmap1" defer></script>
-    <script src="./wasm-loader.js?v=20260904-realroute3" defer></script>
+    <meta name="description" content="MOTO GPS 手机实时导航与圆屏模拟器：多路线选择、不走高速摩旅偏好、海外 WGS84 路线、轨迹回放与共享 LVGL 圆屏界面。" />
+    <link rel="manifest" href="./manifest.webmanifest?v=20261123-upgrade5" />
+    <link rel="stylesheet" href="./styles.css?v=20261123-upgrade5" />
+    <title>MOTO GPS · 手机导航与圆屏模拟</title>
+    <script src="./map-scene-overlay.js?v=20261123-upgrade5" defer></script>
+    <script src="./scenario-player.js?v=20261123-upgrade5" defer></script>
+    <script src="./app.js?v=20261123-upgrade5" defer></script>
+    <script src="./wasm-loader.js?v=20261123-upgrade5" defer></script>
   </head>
   <body data-view="setup">
     <div class="app-shell">
       <header class="app-bar">
         <button class="brand" id="home-button" type="button" aria-label="返回目的地搜索">
           <span class="brand-mark" aria-hidden="true">M</span>
-          <span><b>MOTO GPS</b><small>PHONE NAV / 01</small></span>
+          <span><b>MOTO GPS</b><small>PHONE NAV / SIM</small></span>
         </button>
-        <button class="system-state" id="system-state" type="button" aria-label="查看运行状态">
-          <i aria-hidden="true"></i>
-          <span><b id="system-state-label">正在检查</b><small id="system-state-detail">服务与定位</small></span>
-        </button>
+        <div class="header-actions">
+          <button class="sim-shortcut" id="open-sim-lab" type="button">轨迹回放台</button>
+          <button class="system-state" id="system-state" type="button" aria-label="查看运行状态">
+            <i aria-hidden="true"></i>
+            <span><b id="system-state-label">正在检查</b><small id="system-state-detail">服务与定位</small></span>
+          </button>
+        </div>
       </header>
 
       <main>
         <section class="view setup-view" id="setup-view" aria-labelledby="setup-title">
           <div class="setup-heading">
-            <p class="eyebrow">REAL-TIME ROUTING</p>
+            <p class="eyebrow">REAL-TIME ROUTING · GCJ-02 / WGS84</p>
             <h1 id="setup-title">去哪儿？</h1>
-            <p>打开定位，搜索目的地。导航时让这个页面保持在前台。</p>
+            <p>打开手机定位或一键加载模拟起点，搜索全国及海外目的地，预览并同步到圆屏。</p>
           </div>
 
           <section class="location-card" id="location-card" aria-labelledby="location-title">
             <span class="location-radar" aria-hidden="true"><i></i></span>
             <div>
               <h2 id="location-title">先获取你的位置</h2>
-              <p id="location-copy">路线、偏航和车头方向都从手机实时定位计算。</p>
+              <p id="location-copy">路线、偏航和车头方向都从实时定位或模拟起点计算。</p>
             </div>
             <button id="location-button" type="button">启用定位</button>
+            <div class="sim-origins" aria-label="无真机模拟起点">
+              <span>模拟起点：</span>
+              <button type="button" data-sim-origin="36.674804,117.122449,济南历下">济南历下</button>
+              <button type="button" data-sim-origin="35.104672,118.356448,临沂兰山">临沂兰山(跨城)</button>
+              <button type="button" data-sim-origin="34.702485,135.495951,大阪梅田">大阪梅田(海外)</button>
+            </div>
           </section>
 
           <form class="search-form" id="search-form" role="search">
             <label for="destination-query">目的地</label>
             <div class="search-box">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
-              <input id="destination-query" name="keywords" type="search" inputmode="search" enterkeyhint="search" autocomplete="off" placeholder="输入城市和地点，例如：济南奥体中心" minlength="2" maxlength="80" disabled />
+              <input id="destination-query" name="keywords" type="search" inputmode="search" enterkeyhint="search" autocomplete="off" placeholder="输入地点，如：济南西站 / 趵突泉 / Osaka Castle" minlength="2" maxlength="80" disabled />
               <button id="clear-search" class="clear-search" type="button" aria-label="清空搜索" hidden>×</button>
             </div>
           </form>
 
+          <div class="quick-searches" id="quick-searches">
+            <button type="button" data-quick-query="济南西站">济南西站</button>
+            <button type="button" data-quick-query="济南奥体中心">济南奥体中心</button>
+            <button type="button" data-quick-query="趵突泉">趵突泉</button>
+            <button type="button" data-quick-query="Osaka Castle">Osaka Castle</button>
+          </div>
+
           <div class="search-feedback" id="search-feedback" aria-live="polite">
-            <span>定位后即可搜索全国地点</span>
+            <span>启用定位或选择模拟起点后即可搜索地点</span>
           </div>
           <ol class="place-results" id="place-results" aria-label="目的地搜索结果"></ol>
 
           <div class="usage-note">
-            <span>使用条件</span>
-            <p>前台亮屏可持续定位；网页进入后台或锁屏后，iPhone 会暂停定位。</p>
+            <span>模拟与骑行</span>
+            <p>没有真机时可直接用上方“模拟起点”或右上角<a href="./ride.html">独立圆屏工作台 (ride.html)</a>测完整流程。</p>
           </div>
         </section>
 
         <section class="view route-view" id="route-view" aria-labelledby="route-title" hidden>
           <button class="back-button" id="route-back" type="button"><span aria-hidden="true">←</span> 更换目的地</button>
           <div class="route-heading">
-            <p class="eyebrow">ROUTE READY</p>
+            <p class="eyebrow">ROUTE PREVIEW &amp; OPTIONS</p>
             <h1 id="route-title">路线确认</h1>
             <p id="route-destination">正在读取目的地</p>
           </div>
 
-          <div class="instrument instrument--preview">
+          <div class="preference-chips" id="preference-chips" role="group" aria-label="摩托车路线偏好">
+            <button type="button" data-pref="default" class="is-active">默认推荐</button>
+            <button type="button" data-pref="avoid_highway">不走高速</button>
+            <button type="button" data-pref="less_tolls">少收费</button>
+            <button type="button" data-pref="fastest">速度最快</button>
+          </div>
+
+          <div class="instrument instrument--preview" id="preview-instrument">
             <div class="screen-ring">
               <canvas id="canvas" width="466" height="466" aria-label="实时圆形导航画面；左右滑动可切换导航、马表、指南针和音乐"></canvas>
             </div>
           </div>
+
+          <div class="route-options-list" id="route-options-list" aria-label="备选路线列表"></div>
 
           <section class="route-summary" aria-label="路线概览">
             <div><strong id="route-duration">--</strong><span>预计用时</span></div>
@@ -86,7 +112,7 @@
 
           <p class="route-status" id="route-status" aria-live="polite">正在规划实时路线…</p>
           <button class="start-button" id="start-navigation" type="button" disabled>
-            <span>开始导航</span><small>保持屏幕常亮</small>
+            <span>开始导航</span><small id="start-button-hint">同步所选路线到圆屏</small>
           </button>
         </section>
 
@@ -99,7 +125,12 @@
           <div class="ride-alert" id="ride-alert" aria-live="assertive" hidden></div>
           <div class="instrument instrument--ride" id="ride-instrument"></div>
 
-          <div class="gesture-note" aria-hidden="true"><span>←</span><b>左右滑动圆屏切换页面</b><span>→</span></div>
+          <div class="page-pills" id="ride-page-pills" role="group" aria-label="圆屏页面切换">
+            <button type="button" data-page="0" class="is-active">导航页</button>
+            <button type="button" data-page="1">马表页</button>
+            <button type="button" data-page="2">指南针</button>
+            <button type="button" data-page="3">音乐页</button>
+          </div>
 
           <section class="ride-stats" aria-label="导航状态">
             <div><span>剩余</span><strong id="remaining-distance">--</strong></div>
@@ -112,6 +143,54 @@
             <span id="location-accuracy">GPS -- m</span>
           </div>
         </section>
+
+        <section class="view sim-view" id="sim-view" aria-labelledby="sim-title" hidden>
+          <button class="back-button" id="sim-back" type="button"><span aria-hidden="true">←</span> 返回目的地搜索</button>
+          <div class="sim-header">
+            <p class="eyebrow">ROUND SCREEN &amp; TRACK REPLAY</p>
+            <h1 id="sim-title">圆屏轨迹回放台</h1>
+            <p id="sim-note">在真实 LVGL WASM 圆屏上回放偏航重算、隧道丢星、平行辅路、跨城长途与断线恢复。</p>
+          </div>
+
+          <div class="instrument instrument--sim" id="sim-instrument"></div>
+
+          <div class="page-pills" id="sim-page-pills" role="group" aria-label="圆屏页面切换">
+            <button type="button" data-page="0" class="is-active">导航页</button>
+            <button type="button" data-page="1">马表页</button>
+            <button type="button" data-page="2">指南针</button>
+            <button type="button" data-page="3">音乐页</button>
+          </div>
+
+          <div class="sim-controls">
+            <label for="sim-scenario-select">回放场景</label>
+            <select id="sim-scenario-select"></select>
+
+            <div class="sim-transport">
+              <button type="button" id="sim-play-toggle" class="primary-pill">播放回放</button>
+              <div class="speed-group" id="sim-speed-group">
+                <button type="button" data-speed="1" class="is-active">1×</button>
+                <button type="button" data-speed="2">2×</button>
+                <button type="button" data-speed="5">5×</button>
+                <button type="button" data-speed="10">10×</button>
+              </div>
+            </div>
+
+            <div class="sim-scrubber">
+              <input type="range" id="sim-slider" min="0" max="80" value="0" aria-label="轨迹进度" />
+              <div class="sim-scrubber-meta">
+                <span id="sim-step-label">样本 0 / 80</span>
+                <span id="sim-step-note">准备就绪</span>
+              </div>
+            </div>
+
+            <div class="sim-telemetry">
+              <div><span>状态</span><strong id="sim-stat-state">导航中</strong></div>
+              <div><span>剩余里程</span><strong id="sim-stat-rem">--</strong></div>
+              <div><span>路线代数</span><strong id="sim-stat-gen">#1</strong></div>
+              <div><span>偏航标记</span><strong id="sim-stat-off">正常</strong></div>
+            </div>
+          </div>
+        </section>
       </main>
     </div>
 
@@ -119,12 +198,12 @@
       <form method="dialog">
         <div class="dialog-heading"><b>运行状态</b><button value="close" aria-label="关闭">×</button></div>
         <dl>
-          <div><dt>高德服务</dt><dd id="dialog-backend">检查中</dd></div>
+          <div><dt>路线网关</dt><dd id="dialog-backend">检查中</dd></div>
           <div><dt>共享画面</dt><dd id="dialog-runtime">加载中</dd></div>
-          <div><dt>手机定位</dt><dd id="dialog-location">未授权</dd></div>
-          <div><dt>网络</dt><dd id="dialog-network">在线</dd></div>
+          <div><dt>当前定位</dt><dd id="dialog-location">未授权</dd></div>
+          <div><dt>网络状态</dt><dd id="dialog-network">在线</dd></div>
         </dl>
-        <p>真实导航要求 HTTPS、位置权限和前台亮屏。网页锁屏后不能继续可靠定位。</p>
+        <p id="dialog-hint">本地模拟模式下无需高德/Google Key 即可完整体验搜索、选路与圆屏回放。</p>
         <p>MOTO GPS · 作者 <a href="https://github.com/mx3353672833-debug/moto-gps-waveshare">Maler X</a> · <a href="https://github.com/mx3353672833-debug/moto-gps-waveshare/blob/main/LICENSE.md">仅限非商业使用</a></p>
       </form>
     </dialog>
