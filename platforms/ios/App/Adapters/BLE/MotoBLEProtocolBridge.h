@@ -51,6 +51,15 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy) NSString *artistName;
 @end
 
+@interface MotoBLEDisplaySettingsInput : NSObject
+@property(nonatomic) uint8_t brightnessPercent;
+@property(nonatomic) uint8_t arrowSize;
+@property(nonatomic) uint8_t arrowColor;
+@property(nonatomic) uint8_t headingSensitivity;
+@property(nonatomic) uint8_t volumePercent;
+@property(nonatomic) BOOL soundEnabled;
+@end
+
 @interface MotoBLEMapPointInput : NSObject
 @property(nonatomic) int32_t latitudeE6;
 @property(nonatomic) int32_t longitudeE6;
@@ -160,6 +169,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (nullable NSArray<NSData *> *)encodeMediaState:(MotoBLEMediaStateInput *)state
                                            error:(NSError **)error;
+
+- (nullable NSArray<NSData *> *)encodeDisplaySettings:
+    (MotoBLEDisplaySettingsInput *)settings
+                                                 error:(NSError **)error;
 
 - (nullable NSArray<NSData *> *)encodeMapScene:(MotoBLEMapSceneInput *)scene
                                           error:(NSError **)error;

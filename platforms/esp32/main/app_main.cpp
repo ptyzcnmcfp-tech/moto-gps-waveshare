@@ -44,6 +44,24 @@ void demo_tick_task(void* context) {
   }
 }
 
+void battery_status_task(void*) {
+  while (true) {
+    board_battery_state_t state{};
+    const esp_err_t read_result = board_port_get_battery_state(&state);
+    const std::uint8_t percent =
+        read_result == ESP_OK ? state.percent : 255U;
+    const std::uint8_t present =
+        read_result == ESP_OK ? state.battery_present : 0U;
+    const std::uint8_t charging =
+        read_result == ESP_OK ? state.charging : 0U;
+    if (board_port_lock(UINT32_MAX)) {
+      moto_nav_ui_set_battery_state(percent, present, charging);
+      board_port_unlock();
+    }
+    vTaskDelay(pdMS_TO_TICKS(1'000));
+  }
+}
+
 void power_button_task(void*) {
   std::uint64_t pressed_since_ms = 0;
   // The AXP2101 needs roughly a one-second press to power the board on, so
@@ -207,6 +225,10 @@ extern "C" void app_main(void) {
   if (xTaskCreate(demo_tick_task, "moto_demo", 6'144, &phone_bridge, 2,
                   nullptr) != pdPASS) {
     ESP_LOGW(kTag, "navigation demo task could not start");
+  }
+  if (xTaskCreate(battery_status_task, "moto_battery", 3'072, nullptr, 1,
+                  nullptr) != pdPASS) {
+    ESP_LOGW(kTag, "battery status task could not start");
   }
   if (xTaskCreate(power_button_task, "moto_power", 3'072, nullptr, 3,
                   nullptr) != pdPASS) {

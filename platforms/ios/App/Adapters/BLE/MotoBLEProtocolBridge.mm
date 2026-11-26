@@ -162,6 +162,18 @@ moto::ble::MediaState MediaStateFromInput(MotoBLEMediaStateInput *input) {
   return state;
 }
 
+moto::ble::DisplaySettings DisplaySettingsFromInput(
+    MotoBLEDisplaySettingsInput *input) {
+  moto::ble::DisplaySettings settings;
+  settings.brightness_percent = input.brightnessPercent;
+  settings.arrow_size = static_cast<moto::ble::ArrowSize>(input.arrowSize);
+  settings.arrow_color = static_cast<moto::ble::ArrowColor>(input.arrowColor);
+  settings.heading_sensitivity = input.headingSensitivity;
+  settings.volume_percent = input.volumePercent;
+  settings.sound_enabled = input.soundEnabled ? 1 : 0;
+  return settings;
+}
+
 moto::ble::MapRoadClass MapRoadClassFromName(NSString *name) {
   if ([name isEqualToString:@"motorway"]) return moto::ble::MapRoadClass::Motorway;
   if ([name isEqualToString:@"primary"]) return moto::ble::MapRoadClass::Primary;
@@ -268,6 +280,23 @@ moto::ble::ConnectionStatus PhoneConnectionStatus(
     _trafficName = @"unknown";
     _roadName = @"";
     _instructionText = @"";
+  }
+  return self;
+}
+
+@end
+
+@implementation MotoBLEDisplaySettingsInput
+
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _brightnessPercent = 80;
+    _arrowSize = 1;
+    _arrowColor = 0;
+    _headingSensitivity = 5;
+    _volumePercent = 50;
+    _soundEnabled = YES;
   }
   return self;
 }
@@ -501,6 +530,15 @@ moto::ble::ConnectionStatus PhoneConnectionStatus(
   auto *storage = static_cast<CodecStorage *>(_storage);
   return EncodeMessage(storage,
                        moto::ble::Message{MediaStateFromInput(input)},
+                       0, error);
+}
+
+- (NSArray<NSData *> *)encodeDisplaySettings:
+    (MotoBLEDisplaySettingsInput *)input
+                                  error:(NSError **)error {
+  auto *storage = static_cast<CodecStorage *>(_storage);
+  return EncodeMessage(storage,
+                       moto::ble::Message{DisplaySettingsFromInput(input)},
                        0, error);
 }
 

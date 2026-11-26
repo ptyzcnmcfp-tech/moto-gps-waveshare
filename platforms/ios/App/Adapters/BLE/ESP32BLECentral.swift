@@ -206,6 +206,7 @@ final class ESP32BLECentral: NSObject {
     /// one run-loop turn.
     private static let writeWithoutResponsePacingMs: UInt64 = 15
     private static let mapSceneCapability: UInt32 = 1 << 7
+    private static let displaySettingsCapability: UInt32 = 1 << 8
 
     private struct RouteGeometrySignature: Equatable {
         let routeID: String
@@ -213,6 +214,15 @@ final class ESP32BLECentral: NSObject {
         let originLongitudeE6: Int64
         let originLatitudeE6: Int64
         let pointCoordinatesE6: [Int64]
+    }
+
+    private struct PendingDisplaySettings {
+        let brightnessPercent: UInt8
+        let arrowSize: UInt8
+        let arrowColor: UInt8
+        let headingSensitivity: UInt8
+        let volumePercent: UInt8
+        let soundEnabled: Bool
     }
 
     private lazy var central = CBCentralManager(
@@ -227,6 +237,7 @@ final class ESP32BLECentral: NSObject {
     private var handshake: BLEHandshakeGate?
     private var pendingNavigationState: MotoNavCoreSnapshot?
     private var pendingMediaState: PhoneMediaState?
+    private var pendingDisplaySettings: PendingDisplaySettings?
     private var pendingMapScene: OfflineMapSceneWindow?
     private var mapSceneDelivery = BLEMapSceneDelivery()
     private var mapSceneFinalFrame: Data?
@@ -316,6 +327,24 @@ final class ESP32BLECentral: NSObject {
     func sendMediaState(_ state: PhoneMediaState) {
         pendingMediaState = state
         flushPendingMediaState()
+    }
+
+    func sendDisplaySettings(
+        brightnessPercent: UInt8,
+        arrowSize: UInt8,
+        arrowColor: UInt8,
+        headingSensitivity: UInt8,
+        volumePercent: UInt8,
+        soundEnabled: Bool
+    ) {
+        pendingDisplaySettings = PendingDisplaySettings(
+            brightnessPercent: brightnessPercent,
+            arrowSize: arrowSize,
+            arrowColor: arrowColor,
+            headingSensitivity: headingSensitivity,
+            volumePercent: volumePercent,
+            soundEnabled: soundEnabled)
+        flushPendingDisplaySettings()
     }
 
     /// Map scenes are sparse, low-frequency replacements.  Retain only the
@@ -578,6 +607,7 @@ final class ESP32BLECentral: NSObject {
                     sendNavigationSnapshot(pendingNavigationState)
                 }
                 flushPendingMediaState()
+                flushPendingDisplaySettings()
                 flushPendingMapScene()
             }
         } catch {
@@ -870,6 +900,20 @@ final class ESP32BLECentral: NSObject {
         }
     }
 
+    private func flushPendingDisplaySettings() {
+        guard protocolReady,
+              peerCapabilities & Self.displaySettingsCapability != 0,
+              let codec,
+              let settings = pendingDisplaySettings
+        else { return }
+
+        do {
+            try send(codec.encodeDisplaySettings(makeDisplaySettingsInput(settings)))
+        } catch {
+            recoverFromTransportError(error.localizedDescription)
+        }
+    }
+
     private func flushPendingMapScene() {
         guard protocolReady,
               peerCapabilities & Self.mapSceneCapability != 0,
@@ -1149,6 +1193,19 @@ final class ESP32BLECentral: NSObject {
         input.sourceName = state.sourceName
         input.trackTitle = state.trackTitle
         input.artistName = state.artistName
+        return input
+    }
+
+    private func makeDisplaySettingsInput(
+        _ settings: PendingDisplaySettings
+    ) -> MotoBLEDisplaySettingsInput {
+        let input = MotoBLEDisplaySettingsInput()
+        input.brightnessPercent = settings.brightnessPercent
+        input.arrowSize = settings.arrowSize
+        input.arrowColor = settings.arrowColor
+        input.headingSensitivity = settings.headingSensitivity
+        input.volumePercent = settings.volumePercent
+        input.soundEnabled = settings.soundEnabled
         return input
     }
 

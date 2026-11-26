@@ -59,6 +59,17 @@ constexpr std::uint8_t kAxp2101LongPressShutdownMask = 0x02;
 constexpr std::uint8_t kAxp2101LongPressRestartMask = 0x01;
 constexpr std::uint8_t kAxp2101KeyTimingRegister = 0x27;
 constexpr std::uint8_t kAxp2101PowerOffTimingMask = 0x0C;
+constexpr std::uint8_t kAxp2101Status1Register = 0x00;
+constexpr std::uint8_t kAxp2101Status2Register = 0x01;
+constexpr std::uint8_t kAxp2101BatteryPresentMask = 0x08;
+constexpr std::uint8_t kAxp2101ChargeDirectionMask = 0x60;
+constexpr std::uint8_t kAxp2101ChargeDirectionCharge = 0x20;
+constexpr std::uint8_t kAxp2101ChargeStatusMask = 0x07;
+constexpr std::uint8_t kAxp2101AdcEnableRegister = 0x30;
+constexpr std::uint8_t kAxp2101BatteryAdcMask = 0x01;
+constexpr std::uint8_t kAxp2101BatteryVoltageHighRegister = 0x34;
+constexpr std::uint8_t kAxp2101BatteryVoltageLowRegister = 0x35;
+constexpr std::uint8_t kAxp2101BatteryPercentRegister = 0xA4;
 lv_display_t* display = nullptr;
 esp_lcd_panel_handle_t panel = nullptr;
 i2c_master_dev_handle_t pmic = nullptr;
@@ -972,6 +983,80 @@ extern "C" bool board_port_power_button_pressed(void) {
   // Official schematic: PWRON -> R12/BSS138/R9 -> SYS_OUT -> GPIO3. The
   // inverter stage makes SYS_OUT high for the duration of a physical press.
   return gpio_get_level(kPowerButtonGpio) != 0;
+}
+
+extern "C" esp_err_t board_port_get_battery_state(
+    board_battery_state_t *out) {
+  if (out == nullptr) {
+    return ESP_ERR_INVALID_ARG;
+  }
+  *out = {255, 0, 0, 0};
+  if (pmic == nullptr) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  std::uint8_t status1 = 0;
+  std::uint8_t status2 = 0;
+  ESP_RETURN_ON_ERROR(read_pmic_register(kAxp2101Status1Register, &status1),
+                      kTag, "AXP2101 status1 read failed");
+  ESP_RETURN_ON_ERROR(read_pmic_register(kAxp2101Status2Register, &status2),
+                      kTag, "AXP2101 status2 read failed");
+
+  const bool present = (status1 & kAxp2101BatteryPresentMask) != 0;
+  if (!present) {
+    return ESP_OK;
+  }
+
+  std::uint8_t adc_enable = 0;
+  ESP_RETURN_ON_ERROR(
+      read_pmic_register(kAxp2101AdcEnableRegister, &adc_enable), kTag,
+      "AXP2101 ADC enable read failed");
+  if ((adc_enable & kAxp2101BatteryAdcMask) == 0) {
+    ESP_RETURN_ON_ERROR(
+        write_pmic_register(kAxp2101AdcEnableRegister,
+                            static_cast<std::uint8_t>(
+                                adc_enable | kAxp2101BatteryAdcMask)),
+        kTag, "AXP2101 battery ADC enable write failed");
+  }
+
+  std::uint8_t voltage_high = 0;
+  std::uint8_t voltage_low = 0;
+  ESP_RETURN_ON_ERROR(
+      read_pmic_register(kAxp2101BatteryVoltageHighRegister, &voltage_high),
+      kTag, "AXP2101 battery voltage high read failed");
+  ESP_RETURN_ON_ERROR(
+      read_pmic_register(kAxp2101BatteryVoltageLowRegister, &voltage_low),
+      kTag, "AXP2101 battery voltage low read failed");
+
+  std::uint8_t percent = 0;
+  ESP_RETURN_ON_ERROR(
+      read_pmic_register(kAxp2101BatteryPercentRegister, &percent), kTag,
+      "AXP2101 battery percentage read failed");
+
+  const std::uint8_t direction =
+      static_cast<std::uint8_t>((status2 & kAxp2101ChargeDirectionMask) >> 5);
+  const std::uint8_t charge_status =
+      status2 & kAxp2101ChargeStatusMask;
+  // 01 = charge direction; 010 = CC, 011 = CV. 100 = charge done and 101 =
+  // not charging, so direction alone is not a reliable charging predicate.
+  const bool charging =
+      direction == 1U && (charge_status == 0x02U || charge_status == 0x03U);
+
+  out->battery_present = 1;
+  out->charging = charging ? 1 : 0;
+  out->voltage_mv = static_cast<std::uint16_t>(
+      ((static_cast<std::uint16_t>(voltage_high & 0x3FU) << 8) |
+       static_cast<std::uint16_t>(voltage_low)));
+  out->percent = percent <= 100U ? percent : 255U;
+  return ESP_OK;
+}
+
+extern "C" esp_err_t board_port_set_brightness(uint8_t percent) {
+  if (panel == nullptr) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  const std::uint8_t clamped = percent > 100U ? 100U : percent;
+  return esp_lcd_panel_co5300_set_brightness(panel, clamped);
 }
 
 extern "C" esp_err_t board_port_power_off(void) {

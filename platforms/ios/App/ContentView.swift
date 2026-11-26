@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var showsMapDownloads = false
     @State private var showsDataUse = false
     @State private var showsGatewaySettings = false
+    @State private var showsWeather = false
 
     var body: some View {
         NavigationStack(path: navigationPath) {
@@ -45,6 +46,7 @@ struct ContentView: View {
             )
         }
         .sheet(isPresented: $showsDataUse) { DataUseView() }
+        .sheet(isPresented: $showsWeather) { WeatherView(model: model) }
         .sheet(isPresented: $showsGatewaySettings) { GatewaySettingsView(model: model) }
     }
 
@@ -104,6 +106,7 @@ struct ContentView: View {
                 }
                 Section {
                     deviceSummaryButton
+                    weatherButton
                     mapDownloadsButton
                     demoButton
                 } footer: {
@@ -610,6 +613,42 @@ struct ContentView: View {
         .accessibilityIdentifier("device-summary-button")
     }
 
+    private var weatherButton: some View {
+        Button {
+            searchFocused = false
+            showsWeather = true
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: "cloud.sun")
+                    .font(.title3)
+                    .foregroundStyle(.blue)
+                    .frame(width: 24)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("天气").foregroundStyle(Color.primary)
+                    Text(weatherButtonDetail)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color(uiColor: .tertiaryLabel))
+                    .accessibilityHidden(true)
+            }
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .accessibilityIdentifier("weather-button")
+    }
+
+    private var weatherButtonDetail: String {
+        guard let weather = model.weather else {
+            return model.isLoadingWeather ? "获取中" : "7 天预报与降水概率"
+        }
+        return "\(Int(round(weather.currentTemperature)))° · 降水 \(weather.currentPrecipitationProbability)%"
+    }
+
     private var deviceDetails: some View {
         NavigationStack {
             Form {
@@ -646,6 +685,63 @@ struct ContentView: View {
                         Button("前往设置开启定位", action: openSystemSettings)
                     }
                 }
+                Section("圆屏显示") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("亮度")
+                            Spacer()
+                            Text("\(Int(model.displaySettings.brightnessPercent))%")
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $model.displaySettings.brightnessPercent,
+                               in: 0...100, step: 1)
+                    }
+                    Picker("箭头大小", selection: $model.displaySettings.arrowSize) {
+                        Text("小").tag(0)
+                        Text("中").tag(1)
+                        Text("大").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                    Picker("箭头颜色", selection: $model.displaySettings.arrowColor) {
+                        Text("白").tag(0)
+                        Text("冰蓝").tag(1)
+                        Text("琥珀").tag(2)
+                        Text("绿").tag(3)
+                        Text("红").tag(4)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("航向灵敏度")
+                            Spacer()
+                            Text("\(model.displaySettings.headingSensitivity)")
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: Binding(
+                            get: { Double(model.displaySettings.headingSensitivity) },
+                            set: { model.displaySettings.headingSensitivity = Int($0.rounded()) }
+                        ), in: 1...10, step: 1)
+                    }
+                } footer: {
+                    Text("亮度、箭头样式和灵敏度会在连接成功后同步到圆屏。")
+                }
+                Section("提示音") {
+                    Toggle("开启圆屏提示音", isOn: $model.displaySettings.soundEnabled)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("音量")
+                            Spacer()
+                            Text("\(Int(model.displaySettings.volumePercent))%")
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $model.displaySettings.volumePercent,
+                               in: 0...100, step: 1)
+                    }
+                } footer: {
+                    Text("音量控制圆屏扬声器；当前固件暂存设置，提示音硬件播放仍需后续接通。")
+                }
+            }
+            .onChange(of: model.displaySettings) { _, newValue in
+                model.updateDisplaySettings(newValue)
             }
             .navigationTitle("我的圆屏")
             .navigationBarTitleDisplayMode(.inline)

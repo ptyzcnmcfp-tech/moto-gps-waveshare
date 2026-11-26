@@ -64,6 +64,7 @@ class PhoneNavBridge {
       const moto::ble::RouteGeometry& input);
   void consume_traffic(const moto::ble::TrafficDeviation& input);
   void consume_media(const moto::ble::MediaState& input);
+  void consume_display_settings(const moto::ble::DisplaySettings& input);
   moto::ble::AckStatus consume_map_scene(const moto::ble::MapScene& input);
   // Requires state_mutex_. This helper never calls LVGL or the BLE sender.
   void apply_geometry_locked(moto::nav::NavSnapshot& target);
@@ -105,6 +106,10 @@ class PhoneNavBridge {
   moto_ui_phone_connection_t ui_phone_connection_ = MOTO_UI_PHONE_OFFLINE;
   moto::ble::MediaState media_state_{};
   moto::ble::MediaState render_media_state_{};
+  moto::ble::DisplaySettings settings_{};
+  moto::ble::DisplaySettings render_settings_{};
+  bool has_settings_ = false;
+  bool render_has_settings_ = false;
   bool music_page_enabled_ = false;
   bool render_music_page_enabled_ = false;
   moto_ui_phone_connection_t render_phone_connection_ =
@@ -114,6 +119,7 @@ class PhoneNavBridge {
     RenderNavigation = 1U << 0U,
     RenderMotion = 1U << 1U,
     RenderMedia = 1U << 2U,
+    RenderSettings = 1U << 3U,
   };
   std::atomic<std::uint32_t> pending_render_flags_{0};
 #ifdef ESP_PLATFORM

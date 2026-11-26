@@ -128,6 +128,9 @@ struct Ui {
     lv_obj_t *nav_limit = nullptr;
     lv_obj_t *nav_limit_value = nullptr;
     lv_obj_t *nav_progress = nullptr;
+    lv_obj_t *nav_battery = nullptr;
+    lv_obj_t *nav_speed = nullptr;
+    lv_obj_t *nav_speed_unit = nullptr;
 
     // A full-screen empty-state surface replaces the old tiny
     // WAITING FOR PHONE / WAITING FOR ROUTE caption. It is kept inside the
@@ -147,6 +150,11 @@ struct Ui {
     bool lifecycle_success_active = false;
     bool navigation_has_guidance = false;
     bool navigation_route_request_in_flight = false;
+    std::uint8_t arrow_size = 1;
+    std::uint8_t arrow_color = 0;
+    std::uint8_t heading_sensitivity = 5;
+    std::uint8_t volume_percent = 50;
+    std::uint8_t sound_enabled = 1;
 
     lv_obj_t *speed_arc = nullptr;
     lv_obj_t *speed_value = nullptr;
@@ -246,31 +254,59 @@ const char *cardinal_name(std::uint16_t heading) {
     return names[((heading + 22U) / 45U) % 8U];
 }
 
+lv_color_t current_arrow_color() {
+    switch(ui.arrow_color) {
+        case 1: return kIce;
+        case 2: return kAmber;
+        case 3: return kGreen;
+        case 4: return kRed;
+        default: return kWhite;
+    }
+}
+
+double current_arrow_scale() {
+    switch(ui.arrow_size) {
+        case 0: return 0.78;
+        case 2: return 1.22;
+        default: return 1.0;
+    }
+}
+
 void draw_vehicle_marker(lv_event_t *event) {
     lv_obj_t *object = lv_event_get_target_obj(event);
     lv_area_t area;
     lv_obj_get_coords(object, &area);
     lv_layer_t *layer = lv_event_get_layer(event);
 
+    const double center_x = static_cast<double>(area.x1) + px(17);
+    const double center_y = static_cast<double>(area.y1) + px(18);
+    const double scale = current_arrow_scale();
+    const double tip_y = center_y - px(18) * scale;
+    const double base_y = center_y + px(18) * scale;
+    const double outer_half = px(17) * scale;
+    const double inner_tip_y = center_y - px(13) * scale;
+    const double inner_base_y = center_y + px(12) * scale;
+    const double inner_half = px(11) * scale;
+
     lv_draw_triangle_dsc_t triangle;
     lv_draw_triangle_dsc_init(&triangle);
     triangle.color = kBlack;
     triangle.opa = LV_OPA_COVER;
-    triangle.p[0] = {static_cast<lv_value_precise_t>(area.x1 + px(17)),
-                     static_cast<lv_value_precise_t>(area.y1)};
-    triangle.p[1] = {static_cast<lv_value_precise_t>(area.x1),
-                     static_cast<lv_value_precise_t>(area.y1 + px(36))};
-    triangle.p[2] = {static_cast<lv_value_precise_t>(area.x1 + px(34)),
-                     static_cast<lv_value_precise_t>(area.y1 + px(36))};
+    triangle.p[0] = {static_cast<lv_value_precise_t>(center_x),
+                     static_cast<lv_value_precise_t>(tip_y)};
+    triangle.p[1] = {static_cast<lv_value_precise_t>(center_x - outer_half),
+                     static_cast<lv_value_precise_t>(base_y)};
+    triangle.p[2] = {static_cast<lv_value_precise_t>(center_x + outer_half),
+                     static_cast<lv_value_precise_t>(base_y)};
     lv_draw_triangle(layer, &triangle);
 
-    triangle.color = kWhite;
-    triangle.p[0] = {static_cast<lv_value_precise_t>(area.x1 + px(17)),
-                     static_cast<lv_value_precise_t>(area.y1 + px(5))};
-    triangle.p[1] = {static_cast<lv_value_precise_t>(area.x1 + px(6)),
-                     static_cast<lv_value_precise_t>(area.y1 + px(30))};
-    triangle.p[2] = {static_cast<lv_value_precise_t>(area.x1 + px(28)),
-                     static_cast<lv_value_precise_t>(area.y1 + px(30))};
+    triangle.color = current_arrow_color();
+    triangle.p[0] = {static_cast<lv_value_precise_t>(center_x),
+                     static_cast<lv_value_precise_t>(inner_tip_y)};
+    triangle.p[1] = {static_cast<lv_value_precise_t>(center_x - inner_half),
+                     static_cast<lv_value_precise_t>(inner_base_y)};
+    triangle.p[2] = {static_cast<lv_value_precise_t>(center_x + inner_half),
+                     static_cast<lv_value_precise_t>(inner_base_y)};
     lv_draw_triangle(layer, &triangle);
 }
 
@@ -281,7 +317,10 @@ void update_page_dots() {
         lv_obj_set_style_radius(ui.page_dots[i], px(3), 0);
         lv_obj_set_style_bg_color(ui.page_dots[i], active ? kWhite : kGraphite, 0);
         lv_obj_set_x(ui.page_dots[i], px(145 + i * 22 - (active ? 5 : 0)));
-        const bool available = i != MOTO_UI_PAGE_MUSIC || ui.music_page_enabled;
+        // The rider-facing firmware currently exposes only the navigation
+        // page. Speed, compass and music pages remain in the shared ABI for
+        // protocol compatibility but are not reachable by swipe or dots.
+        const bool available = i == MOTO_UI_PAGE_NAVIGATION;
         if(ui.page_dots_visible && available) {
             lv_obj_remove_flag(ui.page_dots[i], LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -323,7 +362,7 @@ void install_interaction_wake(lv_obj_t *object) {
 
 void show_page(moto_ui_page_t page, bool reveal_on_same_page = false) {
     if(page < MOTO_UI_PAGE_NAVIGATION || page >= MOTO_UI_PAGE_COUNT) return;
-    if(page == MOTO_UI_PAGE_MUSIC && !ui.music_page_enabled) {
+    if(page != MOTO_UI_PAGE_NAVIGATION) {
         page = MOTO_UI_PAGE_NAVIGATION;
     }
     const bool changed = page != ui.page;
@@ -344,24 +383,10 @@ void show_page(moto_ui_page_t page, bool reveal_on_same_page = false) {
 void gesture_event(lv_event_t *) {
     lv_indev_t *indev = lv_indev_active();
     if(indev == nullptr) return;
-    const lv_dir_t direction = lv_indev_get_gesture_dir(indev);
-    int next = static_cast<int>(ui.page);
-    if(direction == LV_DIR_LEFT) {
-        next = (next + 1) % MOTO_UI_PAGE_COUNT;
-    } else if(direction == LV_DIR_RIGHT) {
-        next = (next + MOTO_UI_PAGE_COUNT - 1) % MOTO_UI_PAGE_COUNT;
-    } else {
-        return;
-    }
-    if(!ui.music_page_enabled && next == MOTO_UI_PAGE_MUSIC) {
-        next = direction == LV_DIR_LEFT ? MOTO_UI_PAGE_NAVIGATION
-                                        : MOTO_UI_PAGE_COMPASS;
-    }
-    const auto requested = static_cast<moto_ui_page_t>(next);
+    // Only the navigation page is exposed in this rider-facing build. Swipes
+    // wake the page affordance but do not navigate to hidden utility pages.
     if(ui.page_callback != nullptr) {
-        ui.page_callback(requested, ui.page_callback_context);
-    } else {
-        show_page(requested, true);
+        ui.page_callback(MOTO_UI_PAGE_NAVIGATION, ui.page_callback_context);
     }
     reveal_page_dots();
     lv_indev_wait_release(indev);
@@ -1379,6 +1404,11 @@ void update_navigation(const moto_ui_state_t *state) {
     update_maneuver(state->maneuver);
     update_nav_status(state);
 
+    char speed[16];
+    std::snprintf(speed, sizeof(speed), "%u",
+                  static_cast<unsigned>(state->speed_kph));
+    lv_label_set_text(ui.nav_speed, speed);
+
     // Never suggest "go straight for 0 m" while there is no route. Waiting is
     // a connection state, not actionable navigation guidance.
     const bool has_guidance = ui.demo_active ||
@@ -1588,6 +1618,17 @@ void create_navigation_page() {
     lv_obj_set_width(ui.nav_status, px(220));
     lv_obj_set_style_text_align(ui.nav_status, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(ui.nav_status, LV_ALIGN_TOP_MID, 0, px(16));
+
+    ui.nav_battery = make_label(page, &lv_font_montserrat_16, kSoft, "—");
+    lv_obj_set_style_text_letter_space(ui.nav_battery, px(1), 0);
+    lv_obj_align(ui.nav_battery, LV_ALIGN_TOP_RIGHT, px(-42), px(18));
+
+    ui.nav_speed = make_label(page, &lv_font_montserrat_28, kWhite, "0");
+    lv_obj_align(ui.nav_speed, LV_ALIGN_BOTTOM_RIGHT, px(-48), px(-58));
+    ui.nav_speed_unit = make_label(page, &lv_font_montserrat_16, kQuiet, "km/h");
+    lv_obj_set_style_text_letter_space(ui.nav_speed_unit, px(1), 0);
+    lv_obj_align_to(ui.nav_speed_unit, ui.nav_speed, LV_ALIGN_OUT_RIGHT_BOTTOM,
+                    px(6), px(-4));
 
     // The next action is the navigation page's single visual hero. The short
     // road window above is deliberately quieter and contains no fake side
@@ -2080,6 +2121,40 @@ extern "C" void moto_nav_ui_set_page_change_callback(
     moto_page_change_callback_t callback, void *context) {
     ui.page_callback = callback;
     ui.page_callback_context = context;
+}
+
+extern "C" void moto_nav_ui_set_battery_state(uint8_t percent,
+                                              uint8_t battery_present,
+                                              uint8_t charging) {
+    if(ui.screen == nullptr || ui.nav_battery == nullptr) return;
+    if(battery_present == 0 || percent > 100U) {
+        lv_label_set_text(ui.nav_battery, "—");
+        lv_obj_set_style_text_color(ui.nav_battery, kQuiet, 0);
+        return;
+    }
+    char text[20];
+    std::snprintf(text, sizeof(text), "%s%u%%",
+                  charging != 0 ? "+" : "",
+                  static_cast<unsigned>(percent));
+    lv_label_set_text(ui.nav_battery, text);
+    lv_obj_set_style_text_color(ui.nav_battery,
+                                percent <= 20 ? kRed
+                                : percent <= 50 ? kAmber
+                                : kGreen, 0);
+}
+
+extern "C" void moto_nav_ui_set_display_settings(
+    const moto_display_settings_t *settings) {
+    if(settings == nullptr || ui.screen == nullptr) return;
+    ui.arrow_size = settings->arrow_size <= 2U ? settings->arrow_size : 1U;
+    ui.arrow_color = settings->arrow_color <= 4U ? settings->arrow_color : 0U;
+    ui.heading_sensitivity = settings->heading_sensitivity == 0U
+        ? 5U
+        : static_cast<std::uint8_t>(
+              std::min<std::uint8_t>(settings->heading_sensitivity, 10U));
+    ui.volume_percent = std::min<std::uint8_t>(settings->volume_percent, 100U);
+    ui.sound_enabled = settings->sound_enabled != 0U ? 1U : 0U;
+    if(ui.nav_marker != nullptr) lv_obj_invalidate(ui.nav_marker);
 }
 
 extern "C" void moto_nav_ui_set_music_state(const moto_music_state_t *state) {

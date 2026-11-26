@@ -216,6 +216,14 @@ bool valid_ack_status(AckStatus status) {
   return enum_at_most(status, AckStatus::Duplicate);
 }
 
+bool valid_arrow_size(ArrowSize size) {
+  return enum_at_most(size, ArrowSize::Large);
+}
+
+bool valid_arrow_color(ArrowColor color) {
+  return enum_at_most(color, ArrowColor::Red);
+}
+
 bool valid_navigation_state(NavigationState state) {
   return enum_at_most(state, NavigationState::Arrived);
 }
@@ -474,6 +482,19 @@ Error validate(const MapScene& value) {
   return Error::None;
 }
 
+Error validate(const DisplaySettings& value) {
+  if (!valid_arrow_size(value.arrow_size) ||
+      !valid_arrow_color(value.arrow_color)) {
+    return Error::InvalidEnum;
+  }
+  if (value.brightness_percent > 100 || value.heading_sensitivity < 1 ||
+      value.heading_sensitivity > 10 || value.volume_percent > 100 ||
+      (value.sound_enabled != 0 && value.sound_enabled != 1)) {
+    return Error::OutOfRange;
+  }
+  return Error::None;
+}
+
 Error validate(const DeviceCommand& value) {
   if (!valid_command_kind(value.kind) || !valid_display_page(value.page)) {
     return Error::InvalidEnum;
@@ -607,6 +628,13 @@ BytesResult encode_payload(const T& value) {
       writer.u8(static_cast<std::uint8_t>(building.building_class));
       write_points(building.points);
     }
+  } else if constexpr (std::is_same_v<T, DisplaySettings>) {
+    writer.u8(value.brightness_percent);
+    writer.u8(static_cast<std::uint8_t>(value.arrow_size));
+    writer.u8(static_cast<std::uint8_t>(value.arrow_color));
+    writer.u8(value.heading_sensitivity);
+    writer.u8(value.volume_percent);
+    writer.u8(value.sound_enabled);
   } else if constexpr (std::is_same_v<T, DeviceCommand>) {
     writer.u8(static_cast<std::uint8_t>(value.kind));
     writer.u16(value.command_id);
@@ -885,6 +913,21 @@ MessageResult decode_map_scene(ByteView payload) {
       }
       reader.require_end();
     }
+  }
+  return decoded_result(std::move(value), reader);
+}
+
+MessageResult decode_display_settings(ByteView payload) {
+  Reader reader(payload);
+  DisplaySettings value;
+  if (begin_payload(reader)) {
+    value.brightness_percent = reader.u8();
+    value.arrow_size = static_cast<ArrowSize>(reader.u8());
+    value.arrow_color = static_cast<ArrowColor>(reader.u8());
+    value.heading_sensitivity = reader.u8();
+    value.volume_percent = reader.u8();
+    value.sound_enabled = reader.u8();
+    reader.require_end();
   }
   return decoded_result(std::move(value), reader);
 }
@@ -1448,6 +1491,14 @@ bool MapScene::operator==(const MapScene& rhs) const noexcept {
                   rhs.view_origin, rhs.radius_m, rhs.roads, rhs.buildings);
 }
 
+bool DisplaySettings::operator==(const DisplaySettings& rhs) const noexcept {
+  return std::tie(brightness_percent, arrow_size, arrow_color,
+                  heading_sensitivity, volume_percent, sound_enabled) ==
+         std::tie(rhs.brightness_percent, rhs.arrow_size, rhs.arrow_color,
+                  rhs.heading_sensitivity, rhs.volume_percent,
+                  rhs.sound_enabled);
+}
+
 bool DeviceCommand::operator==(const DeviceCommand& rhs) const noexcept {
   return std::tie(kind, command_id, page, x, y, event_time_ms) ==
          std::tie(rhs.kind, rhs.command_id, rhs.page, rhs.x, rhs.y,
@@ -1474,6 +1525,8 @@ MessageType message_type(const Message& message) noexcept {
           return MessageType::MediaState;
         } else if constexpr (std::is_same_v<T, MapScene>) {
           return MessageType::MapScene;
+        } else if constexpr (std::is_same_v<T, DisplaySettings>) {
+          return MessageType::DisplaySettings;
         } else {
           return MessageType::DeviceCommand;
         }
@@ -1500,6 +1553,8 @@ MessageResult decode_message(MessageType type, ByteView payload) {
       return decode_traffic_deviation(payload);
     case MessageType::MediaState: return decode_media_state(payload);
     case MessageType::MapScene: return decode_map_scene(payload);
+    case MessageType::DisplaySettings:
+      return decode_display_settings(payload);
     case MessageType::DeviceCommand:
       return decode_device_command(payload);
   }

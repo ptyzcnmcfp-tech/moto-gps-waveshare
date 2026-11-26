@@ -116,6 +116,7 @@ enum class MessageType : std::uint8_t {
   TrafficDeviation = 0x12,
   MediaState = 0x13,
   MapScene = 0x14,
+  DisplaySettings = 0x15,
   DeviceCommand = 0x20,
 };
 
@@ -273,6 +274,7 @@ enum Capability : std::uint32_t {
   CapabilityMusicCommands = 1U << 5U,
   CapabilityCommandAck = 1U << 6U,
   CapabilityMapScene = 1U << 7U,
+  CapabilityDisplaySettings = 1U << 8U,
 };
 
 struct ConnectionStatus {
@@ -525,6 +527,31 @@ struct MapScene {
   bool operator==(const MapScene& rhs) const noexcept;
 };
 
+enum class ArrowSize : std::uint8_t {
+  Small = 0,
+  Medium = 1,
+  Large = 2,
+};
+
+enum class ArrowColor : std::uint8_t {
+  White = 0,
+  Ice = 1,
+  Amber = 2,
+  Green = 3,
+  Red = 4,
+};
+
+struct DisplaySettings {
+  std::uint8_t brightness_percent = 80;
+  ArrowSize arrow_size = ArrowSize::Medium;
+  ArrowColor arrow_color = ArrowColor::White;
+  std::uint8_t heading_sensitivity = 5;
+  std::uint8_t volume_percent = 50;
+  std::uint8_t sound_enabled = 1;
+
+  bool operator==(const DisplaySettings& rhs) const noexcept;
+};
+
 enum class DeviceCommandKind : std::uint8_t {
   PageSelected = 0,
   Tap = 1,
@@ -560,6 +587,7 @@ using Message = std::variant<ConnectionStatus,
                              TrafficDeviation,
                              MediaState,
                              MapScene,
+                             DisplaySettings,
                              DeviceCommand>;
 
 using MessageResult = Result<Message>;

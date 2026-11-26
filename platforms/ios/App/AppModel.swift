@@ -2,6 +2,15 @@ import Combine
 import Foundation
 import MotoNavigationCore
 
+struct DisplaySettingsState: Equatable, Codable {
+    var brightnessPercent: Double = 80
+    var arrowSize: Int = 1
+    var arrowColor: Int = 0
+    var headingSensitivity: Int = 5
+    var volumePercent: Double = 50
+    var soundEnabled: Bool = true
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var navigation = MotoNavCoreBridge().snapshot
@@ -29,8 +38,14 @@ final class AppModel: ObservableObject {
     private var liveRouteProvider: AmapGatewayRouteProvider
     private var placeProvider: AmapGatewayPlaceProvider
     private let mediaController = AppleMusicRemoteController()
+    private let weatherService = OpenMeteoWeatherService()
+    private var weatherTask: Task<Void, Never>?
     let surroundingMap: SurroundingMapStore
     @Published private(set) var mapGatewayBaseURL: URL
+    @Published var displaySettings: DisplaySettingsState
+    @Published private(set) var weather: WeatherForecast?
+    @Published private(set) var isLoadingWeather = false
+    @Published private(set) var weatherFailure: String?
     @Published private(set) var isUpdatingGateway = false
     private var runtime: SharedNavigationRuntime?
     private var placeSearchTask: Task<Void, Never>?
@@ -39,6 +54,7 @@ final class AppModel: ObservableObject {
     private var routePreviewGeneration: UInt64 = 0
 
     private static let recentPlacesKey = "MotoGPS.RecentPlaces.v1"
+    private static let displaySettingsKey = "MotoGPS.DisplaySettings.v1"
 
     init(gatewayBaseURL: URL = AppConfiguration.gatewayBaseURL) {
         liveRouteProvider = AmapGatewayRouteProvider(baseURL: gatewayBaseURL)
@@ -46,6 +62,13 @@ final class AppModel: ObservableObject {
         mapGatewayBaseURL = gatewayBaseURL
         surroundingMap = SurroundingMapStore(baseURL: gatewayBaseURL)
         recentPlaces = Self.loadRecentPlaces()
+        if let data = UserDefaults.standard.data(forKey: Self.displaySettingsKey),
+           let decoded = try? JSONDecoder().decode(
+               DisplaySettingsState.self, from: data) {
+            displaySettings = decoded
+        } else {
+            displaySettings = DisplaySettingsState()
+        }
 
         surroundingMap.onScene = { [weak self] scene in
             self?.bluetooth.sendMapScene(scene)
@@ -73,6 +96,9 @@ final class AppModel: ObservableObject {
         }
         searchLocation.onLocationChange = { [weak self] point in
             guard let self else { return }
+            if point != nil, self.weather == nil {
+                self.refreshWeather()
+            }
             let query = self.destinationQuery.trimmingCharacters(in: .whitespacesAndNewlines)
             if point != nil, self.selectedPlace == nil, query.count >= 2 {
                 // A fresh one-shot fix may arrive after a nationwide request
@@ -107,6 +133,7 @@ final class AppModel: ObservableObject {
         searchLocation.prepare()
         mediaController.start()
         bluetooth.connect()
+        updateDisplaySettings(displaySettings)
 
         #if DEBUG
         // Command-line-only hook for a repeatable phone-to-round-screen smoke
@@ -141,6 +168,60 @@ final class AppModel: ObservableObject {
         placeProvider = AmapGatewayPlaceProvider(baseURL: url)
         mapGatewayBaseURL = url
         try GatewayConfiguration.save(url.absoluteString)
+    }
+
+    func updateDisplaySettings(_ settings: DisplaySettingsState) {
+        var clamped = settings
+        clamped.brightnessPercent = min(max(settings.brightnessPercent, 0), 100)
+        clamped.arrowSize = min(max(settings.arrowSize, 0), 2)
+        clamped.arrowColor = min(max(settings.arrowColor, 0), 4)
+        clamped.headingSensitivity = min(max(settings.headingSensitivity, 1), 10)
+        clamped.volumePercent = min(max(settings.volumePercent, 0), 100)
+        displaySettings = clamped
+        if let data = try? JSONEncoder().encode(clamped) {
+            UserDefaults.standard.set(data, forKey: Self.displaySettingsKey)
+        }
+        bluetooth.sendDisplaySettings(
+            brightnessPercent: UInt8(clamped.brightnessPercent.rounded()),
+            arrowSize: UInt8(clamped.arrowSize),
+            arrowColor: UInt8(clamped.arrowColor),
+            headingSensitivity: UInt8(clamped.headingSensitivity),
+            volumePercent: UInt8(clamped.volumePercent.rounded()),
+            soundEnabled: clamped.soundEnabled)
+    }
+
+    func refreshWeather() {
+        weatherTask?.cancel()
+        let point = searchLocation.latestPoint
+        isLoadingWeather = true
+        weatherFailure = nil
+        weatherTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let forecast = try await self.weatherService.fetchForecast(for: point)
+                guard !Task.isCancelled else { return }
+                self.weather = forecast
+                self.isLoadingWeather = false
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.isLoadingWeather = false
+                self.weatherFailure = Self.weatherMessage(for: error)
+            }
+        }
+    }
+
+    private static func weatherMessage(for error: Error) -> String {
+        guard let weatherError = error as? WeatherServiceError else {
+            return "天气暂时无法加载，请稍后重试"
+        }
+        switch weatherError {
+        case .missingLocation:
+            return "需要当前位置才能查看天气，请在系统设置中允许定位"
+        case .invalidResponse:
+            return "天气数据格式不正确，请稍后重试"
+        case .networkFailure(let message):
+            return "网络异常：\(message)"
+        }
     }
 
     var deviceReady: Bool {

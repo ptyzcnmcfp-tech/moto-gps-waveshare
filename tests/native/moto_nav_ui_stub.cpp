@@ -43,6 +43,9 @@ extern "C" void moto_nav_ui_set_page_change_callback(
     moto_page_change_callback_t,
     void*) {}
 extern "C" void moto_nav_ui_set_music_state(const moto_music_state_t*) {}
+extern "C" void moto_nav_ui_set_battery_state(uint8_t, uint8_t, uint8_t) {}
+extern "C" void moto_nav_ui_set_display_settings(
+    const moto_display_settings_t*) {}
 extern "C" void moto_nav_ui_set_music_page_enabled(uint8_t) {}
 extern "C" void moto_nav_ui_set_music_command_callback(
     moto_music_command_callback_t,

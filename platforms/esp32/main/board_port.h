@@ -56,6 +56,23 @@ void board_port_unlock(void);
 bool board_port_power_button_pressed(void);
 
 /**
+ * Read the on-board PMIC battery snapshot.
+ * `percent` is 0..100; it is set to 255 when no battery is present or the
+ * fuel-gauge level is unavailable. `charging` reflects the charger status.
+ */
+typedef struct {
+    uint8_t percent;
+    uint8_t battery_present;
+    uint8_t charging;
+    uint16_t voltage_mv;
+} board_battery_state_t;
+
+esp_err_t board_port_get_battery_state(board_battery_state_t *out);
+
+/** Set AMOLED panel backlight brightness, 0..100 percent. */
+esp_err_t board_port_set_brightness(uint8_t percent);
+
+/**
  * Request AXP2101 software power-off. Keep a deep-sleep fallback in the caller
  * for the USB-powered case until all three supply combinations are bench-tested.
  */

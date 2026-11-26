@@ -162,6 +162,24 @@ void moto_nav_ui_set_page_change_callback(
     moto_page_change_callback_t callback,
     void *context);
 void moto_nav_ui_set_music_state(const moto_music_state_t *state);
+/**
+ * Device-side battery snapshot. `percent` is 0..100; pass 255 when the PMIC
+ * reports that no battery is connected or the level is unavailable.
+ */
+void moto_nav_ui_set_battery_state(uint8_t percent,
+                                   uint8_t battery_present,
+                                   uint8_t charging);
+
+typedef struct {
+    uint8_t arrow_size;       // 0 small, 1 medium, 2 large
+    uint8_t arrow_color;      // 0 white, 1 ice, 2 amber, 3 green, 4 red
+    uint8_t heading_sensitivity;
+    uint8_t volume_percent;
+    uint8_t sound_enabled;
+} moto_display_settings_t;
+
+void moto_nav_ui_set_display_settings(
+    const moto_display_settings_t *settings);
 void moto_nav_ui_set_music_page_enabled(uint8_t enabled);
 void moto_nav_ui_set_music_command_callback(
     moto_music_command_callback_t callback,

@@ -212,9 +212,11 @@ moto::nav::DisplayPage map_page(moto::ble::DisplayPage page) {
   using Out = moto::nav::DisplayPage;
   switch (page) {
     case In::Navigation: return Out::Navigation;
-    case In::Speed: return Out::Speed;
-    case In::Compass: return Out::Compass;
-    case In::Music: return Out::Music;
+    // Speed/compass/music utility pages are hidden in this rider-facing build.
+    // The incoming phone page request is normalized back to navigation.
+    case In::Speed:
+    case In::Compass:
+    case In::Music: return Out::Navigation;
   }
   return Out::Navigation;
 }
@@ -559,6 +561,9 @@ moto::ble::AckStatus PhoneNavBridge::on_message(
           consume_traffic(value);
         } else if constexpr (std::is_same_v<T, moto::ble::MediaState>) {
           consume_media(value);
+        } else if constexpr (
+            std::is_same_v<T, moto::ble::DisplaySettings>) {
+          consume_display_settings(value);
         } else if constexpr (std::is_same_v<T, moto::ble::MapScene>) {
           return consume_map_scene(value);
         } else if constexpr (std::is_same_v<T, moto::ble::Ack>) {
@@ -785,6 +790,16 @@ void PhoneNavBridge::consume_media(const moto::ble::MediaState& input) {
   request_render(RenderMedia);
 }
 
+void PhoneNavBridge::consume_display_settings(
+    const moto::ble::DisplaySettings& input) {
+  {
+    const std::lock_guard<std::mutex> lock(state_mutex_);
+    settings_ = input;
+    has_settings_ = true;
+  }
+  request_render(RenderSettings);
+}
+
 moto::ble::AckStatus PhoneNavBridge::consume_map_scene(
     const moto::ble::MapScene& input) {
   std::size_t road_point_count = 0;
@@ -930,6 +945,7 @@ void PhoneNavBridge::render_pending() {
   const bool navigation = (requested & RenderNavigation) != 0U;
   const bool motion = !navigation && (requested & RenderMotion) != 0U;
   const bool media = (requested & RenderMedia) != 0U;
+  const bool settings = (requested & RenderSettings) != 0U;
   {
     const std::lock_guard<std::mutex> lock(state_mutex_);
     if (navigation || motion) {
@@ -942,6 +958,10 @@ void PhoneNavBridge::render_pending() {
     }
     if (media) {
       render_media_state_ = media_state_;
+    }
+    if (settings) {
+      render_settings_ = settings_;
+      render_has_settings_ = has_settings_;
     }
   }
 
@@ -987,6 +1007,18 @@ void PhoneNavBridge::render_pending() {
     state.liked =
         (render_media_state_.flags & moto::ble::MediaLiked) != 0U;
     moto_nav_ui_set_music_state(&state);
+  }
+  if (settings && render_has_settings_) {
+    board_port_set_brightness(render_settings_.brightness_percent);
+    moto_display_settings_t ui_settings{};
+    ui_settings.arrow_size = static_cast<uint8_t>(render_settings_.arrow_size);
+    ui_settings.arrow_color =
+        static_cast<uint8_t>(render_settings_.arrow_color);
+    ui_settings.heading_sensitivity =
+        render_settings_.heading_sensitivity;
+    ui_settings.volume_percent = render_settings_.volume_percent;
+    ui_settings.sound_enabled = render_settings_.sound_enabled;
+    moto_nav_ui_set_display_settings(&ui_settings);
   }
   board_port_unlock();
 }
