@@ -685,7 +685,7 @@ struct ContentView: View {
                         Button("前往设置开启定位", action: openSystemSettings)
                     }
                 }
-                Section("圆屏显示") {
+                Section {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text("亮度")
@@ -721,10 +721,12 @@ struct ContentView: View {
                             set: { model.displaySettings.headingSensitivity = Int($0.rounded()) }
                         ), in: 1...10, step: 1)
                     }
+                } header: {
+                    Text("圆屏显示")
                 } footer: {
                     Text("亮度、箭头样式和灵敏度会在连接成功后同步到圆屏。")
                 }
-                Section("提示音") {
+                Section {
                     Toggle("开启圆屏提示音", isOn: $model.displaySettings.soundEnabled)
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -736,6 +738,8 @@ struct ContentView: View {
                         Slider(value: $model.displaySettings.volumePercent,
                                in: 0...100, step: 1)
                     }
+                } header: {
+                    Text("提示音")
                 } footer: {
                     Text("音量控制圆屏扬声器；当前固件暂存设置，提示音硬件播放仍需后续接通。")
                 }
