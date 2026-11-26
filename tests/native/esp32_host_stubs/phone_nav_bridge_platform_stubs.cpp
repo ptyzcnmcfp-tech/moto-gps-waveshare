@@ -61,6 +61,7 @@ extern "C" bool board_port_lock(uint32_t) {
 }
 
 extern "C" void board_port_unlock(void) { board_mutex.unlock(); }
+extern "C" esp_err_t board_port_set_brightness(uint8_t) { return ESP_OK; }
 
 extern "C" void moto_nav_ui_create(void) {}
 extern "C" void moto_nav_ui_show_boot_screen(void) {}
@@ -125,6 +126,9 @@ extern "C" void moto_nav_ui_set_music_state(const moto_music_state_t* state) {
   media_title = state->track_title == nullptr ? "" : state->track_title;
   media_artist = state->artist_name == nullptr ? "" : state->artist_name;
 }
+
+extern "C" void moto_nav_ui_set_display_settings(
+    const moto_display_settings_t*) {}
 extern "C" void moto_nav_ui_set_music_page_enabled(uint8_t enabled) {
   const std::lock_guard<std::mutex> lock(probe_mutex);
   music_page_enabled = enabled != 0;

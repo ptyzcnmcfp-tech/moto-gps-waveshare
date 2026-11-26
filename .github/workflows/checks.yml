@@ -52,7 +52,7 @@ jobs:
           npm test --prefix backend/cloudflare
 
   swift-core:
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
