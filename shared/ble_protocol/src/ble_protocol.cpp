@@ -694,6 +694,7 @@ BytesResult encode_payload(const T& value) {
       }
       writer.u8(value.hour_precipitation_probability[index]);
       writer.u8(static_cast<std::uint8_t>(value.hour_temperature_c[index]));
+      writer.u8(value.hour_weather_code[index]);
     }
     writer.u8(value.day_count);
     for (std::size_t index = 0; index < kWeatherDayCapacity; ++index) {
@@ -1016,6 +1017,7 @@ MessageResult decode_weather_snapshot(ByteView payload) {
       }
       value.hour_precipitation_probability[index] = reader.u8();
       value.hour_temperature_c[index] = static_cast<std::int8_t>(reader.u8());
+      value.hour_weather_code[index] = reader.u8();
     }
     value.day_count = reader.u8();
     for (std::size_t index = 0; index < kWeatherDayCapacity; ++index) {
@@ -1603,14 +1605,15 @@ bool WeatherSnapshot::operator==(const WeatherSnapshot& rhs) const noexcept {
   return std::tie(current_temperature_c, current_precipitation_probability,
                    current_weather_code, hour_count, hour_label,
                    hour_precipitation_probability, hour_temperature_c,
-                   day_count, day_label, day_high_temperature_c,
+                   hour_weather_code, day_count, day_label, day_high_temperature_c,
                    day_low_temperature_c, day_precipitation_probability,
                    day_weather_code) ==
          std::tie(rhs.current_temperature_c,
                   rhs.current_precipitation_probability,
                   rhs.current_weather_code, rhs.hour_count, rhs.hour_label,
                   rhs.hour_precipitation_probability,
-                  rhs.hour_temperature_c, rhs.day_count, rhs.day_label,
+                  rhs.hour_temperature_c, rhs.hour_weather_code,
+                  rhs.day_count, rhs.day_label,
                   rhs.day_high_temperature_c, rhs.day_low_temperature_c,
                   rhs.day_precipitation_probability, rhs.day_weather_code);
 }

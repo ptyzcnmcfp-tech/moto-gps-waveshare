@@ -211,6 +211,7 @@ moto::ble::WeatherSnapshot WeatherSnapshotFromInput(
     weather.hour_precipitation_probability[index] =
         hour.precipitationProbability;
     weather.hour_temperature_c[index] = hour.temperatureC;
+    weather.hour_weather_code[index] = hour.weatherCode;
   }
 
   weather.day_count = static_cast<std::uint8_t>(
@@ -397,6 +398,13 @@ moto::ble::ConnectionStatus PhoneConnectionStatus(
 @end
 
 @implementation MotoBLEWeatherHourInput
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _label = @"";
+  }
+  return self;
+}
 @end
 
 @implementation MotoBLEWeatherDayInput

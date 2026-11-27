@@ -570,6 +570,7 @@ struct WeatherSnapshot {
   std::array<std::uint8_t, kWeatherHourCapacity>
       hour_precipitation_probability{};
   std::array<std::int8_t, kWeatherHourCapacity> hour_temperature_c{};
+  std::array<std::uint8_t, kWeatherHourCapacity> hour_weather_code{};
   std::uint8_t day_count = 0;
   std::array<std::array<char, kWeatherDayLabelBytes>, kWeatherDayCapacity>
       day_label{};

@@ -235,6 +235,7 @@ final class AppModel: ObservableObject {
             item.precipitationProbability =
                 Self.clampedProbability(hour.precipitationProbability)
             item.temperatureC = Self.clampedTemperature(hour.temperature)
+            item.weatherCode = Self.clampedWeatherCode(hour.weatherCode)
             return item
         }
         input.hours = Array(hours)
