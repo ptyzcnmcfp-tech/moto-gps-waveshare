@@ -233,6 +233,14 @@ moto::ble::WeatherSnapshot WeatherSnapshotFromInput(
   return weather;
 }
 
+moto::ble::TimeSync TimeSyncFromInput(MotoBLETimeSyncInput *input) {
+  moto::ble::TimeSync timeSync;
+  timeSync.unix_seconds = input.unixSeconds;
+  timeSync.timezone_offset_seconds = input.timezoneOffsetSeconds;
+  timeSync.source = static_cast<moto::ble::TimeSyncSource>(input.source);
+  return timeSync;
+}
+
 moto::ble::MapScene MapSceneFromInput(MotoBLEMapSceneInput *input) {
   moto::ble::MapScene scene;
   scene.scene_revision = input.sceneRevision;
@@ -423,6 +431,16 @@ moto::ble::ConnectionStatus PhoneConnectionStatus(
   if (self) {
     _hours = @[];
     _days = @[];
+  }
+  return self;
+}
+@end
+
+@implementation MotoBLETimeSyncInput
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _source = 0;
   }
   return self;
 }
@@ -631,6 +649,14 @@ moto::ble::ConnectionStatus PhoneConnectionStatus(
   auto *storage = static_cast<CodecStorage *>(_storage);
   return EncodeMessage(storage,
                        moto::ble::Message{WeatherSnapshotFromInput(input)},
+                       0, error);
+}
+
+- (NSArray<NSData *> *)encodeTimeSync:(MotoBLETimeSyncInput *)timeSync
+                                error:(NSError **)error {
+  auto *storage = static_cast<CodecStorage *>(_storage);
+  return EncodeMessage(storage,
+                       moto::ble::Message{TimeSyncFromInput(timeSync)},
                        0, error);
 }
 

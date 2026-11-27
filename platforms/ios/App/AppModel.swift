@@ -41,6 +41,8 @@ final class AppModel: ObservableObject {
     private let weatherService = OpenMeteoWeatherService()
     private var weatherRefreshTask: Task<Void, Never>?
     private var latestWeather: WeatherForecast?
+    private var lastWeatherRefreshAt = Date.distantPast
+    private var wasDeviceConnected = false
     private var arrivalStopTask: Task<Void, Never>?
     private var arrivalStopHandled = false
     let surroundingMap: SurroundingMapStore
@@ -76,6 +78,16 @@ final class AppModel: ObservableObject {
 
         bluetooth.onSnapshotChange = { [weak self] snapshot in
             self?.device = snapshot
+            let isConnected: Bool
+            if case .connected = snapshot.connection {
+                isConnected = true
+            } else {
+                isConnected = false
+            }
+            if isConnected && !(self?.wasDeviceConnected ?? false) {
+                self?.handleDeviceConnected()
+            }
+            self?.wasDeviceConnected = isConnected
         }
         bluetooth.onDeviceCommand = { [weak self] command in
             guard let self else { return .failed }
@@ -192,6 +204,21 @@ final class AppModel: ObservableObject {
             soundEnabled: clamped.soundEnabled)
     }
 
+    private func handleDeviceConnected() {
+        if let forecast = latestWeather {
+            // The BLE central also retains the newest snapshot, but sending it
+            // explicitly here covers a restored session where the cached value
+            // was produced before the GATT handshake completed.
+            bluetooth.sendWeatherSnapshot(makeWeatherSnapshotInput(forecast))
+        }
+        let now = Date()
+        if weatherRefreshTask == nil,
+           searchLocation.latestPoint != nil,
+           now.timeIntervalSince(lastWeatherRefreshAt) > 10 * 60 {
+            refreshWeather()
+        }
+    }
+
     func refreshWeather() {
         weatherRefreshTask?.cancel()
         weatherRefreshTask = Task { @MainActor [weak self] in
@@ -204,9 +231,10 @@ final class AppModel: ObservableObject {
                     guard !Task.isCancelled else { return }
                     consecutiveFailures = 0
                     self.latestWeather = forecast
+                    self.lastWeatherRefreshAt = Date()
                     self.bluetooth.sendWeatherSnapshot(
                         self.makeWeatherSnapshotInput(forecast))
-                    try? await Task.sleep(for: .seconds(3_600))
+                    try? await Task.sleep(for: .seconds(900))
                 } catch {
                     // Keep the last valid snapshot on the round display. A short
                     // retry avoids waiting an hour after a cold start, temporary

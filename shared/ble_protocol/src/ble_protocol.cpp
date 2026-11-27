@@ -543,6 +543,19 @@ Error validate(const WeatherSnapshot& value) {
   return Error::None;
 }
 
+Error validate(const TimeSync& value) {
+  if (value.source != TimeSyncSource::Phone) {
+    return Error::InvalidEnum;
+  }
+  // Time zones range from UTC-12:00 to UTC+14:00. Reject malformed offsets
+  // rather than allowing the round display to render a wrapped local time.
+  if (value.timezone_offset_seconds < -43'200 ||
+      value.timezone_offset_seconds > 50'400) {
+    return Error::OutOfRange;
+  }
+  return Error::None;
+}
+
 Error validate(const DeviceCommand& value) {
   if (!valid_command_kind(value.kind) || !valid_display_page(value.page)) {
     return Error::InvalidEnum;
@@ -706,6 +719,10 @@ BytesResult encode_payload(const T& value) {
       writer.u8(value.day_precipitation_probability[index]);
       writer.u8(value.day_weather_code[index]);
     }
+  } else if constexpr (std::is_same_v<T, TimeSync>) {
+    writer.u32(value.unix_seconds);
+    writer.s32(value.timezone_offset_seconds);
+    writer.u8(static_cast<std::uint8_t>(value.source));
   } else if constexpr (std::is_same_v<T, DeviceCommand>) {
     writer.u8(static_cast<std::uint8_t>(value.kind));
     writer.u16(value.command_id);
@@ -1029,6 +1046,18 @@ MessageResult decode_weather_snapshot(ByteView payload) {
       value.day_precipitation_probability[index] = reader.u8();
       value.day_weather_code[index] = reader.u8();
     }
+    reader.require_end();
+  }
+  return decoded_result(std::move(value), reader);
+}
+
+MessageResult decode_time_sync(ByteView payload) {
+  Reader reader(payload);
+  TimeSync value;
+  if (begin_payload(reader)) {
+    value.unix_seconds = reader.u32();
+    value.timezone_offset_seconds = reader.s32();
+    value.source = static_cast<TimeSyncSource>(reader.u8());
     reader.require_end();
   }
   return decoded_result(std::move(value), reader);
@@ -1618,6 +1647,12 @@ bool WeatherSnapshot::operator==(const WeatherSnapshot& rhs) const noexcept {
                   rhs.day_precipitation_probability, rhs.day_weather_code);
 }
 
+bool TimeSync::operator==(const TimeSync& rhs) const noexcept {
+  return unix_seconds == rhs.unix_seconds &&
+         timezone_offset_seconds == rhs.timezone_offset_seconds &&
+         source == rhs.source;
+}
+
 bool DeviceCommand::operator==(const DeviceCommand& rhs) const noexcept {
   return std::tie(kind, command_id, page, x, y, event_time_ms) ==
          std::tie(rhs.kind, rhs.command_id, rhs.page, rhs.x, rhs.y,
@@ -1648,6 +1683,8 @@ MessageType message_type(const Message& message) noexcept {
           return MessageType::DisplaySettings;
         } else if constexpr (std::is_same_v<T, WeatherSnapshot>) {
           return MessageType::WeatherSnapshot;
+        } else if constexpr (std::is_same_v<T, TimeSync>) {
+          return MessageType::TimeSync;
         } else {
           return MessageType::DeviceCommand;
         }
@@ -1678,6 +1715,8 @@ MessageResult decode_message(MessageType type, ByteView payload) {
       return decode_display_settings(payload);
     case MessageType::WeatherSnapshot:
       return decode_weather_snapshot(payload);
+    case MessageType::TimeSync:
+      return decode_time_sync(payload);
     case MessageType::DeviceCommand:
       return decode_device_command(payload);
   }

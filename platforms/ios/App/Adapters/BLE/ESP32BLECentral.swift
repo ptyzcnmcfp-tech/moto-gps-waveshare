@@ -208,6 +208,8 @@ final class ESP32BLECentral: NSObject {
     private static let mapSceneCapability: UInt32 = 1 << 7
     private static let displaySettingsCapability: UInt32 = 1 << 8
     private static let weatherSnapshotCapability: UInt32 = 1 << 9
+    private static let timeSyncCapability: UInt32 = 1 << 10
+    private static let timeSyncIntervalMs: UInt64 = 60_000
 
     private struct RouteGeometrySignature: Equatable {
         let routeID: String
@@ -262,6 +264,7 @@ final class ESP32BLECentral: NSObject {
     private var writePumpTask: Task<Void, Never>?
     private var lastNavigationTransmitAtMs: UInt64 = 0
     private var lastWriteWithoutResponseAtMs: UInt64 = 0
+    private var lastTimeSyncAtMs: UInt64 = 0
     private var lastRouteGeometrySignature: RouteGeometrySignature?
     private var lastValidDeviceFrameAtMs: UInt64 = 0
     private var deviceHeartbeatTimeoutMs: UInt64 = 5_000
@@ -361,6 +364,26 @@ final class ESP32BLECentral: NSObject {
     func sendWeatherSnapshot(_ weather: MotoBLEWeatherSnapshotInput) {
         pendingWeatherSnapshot = weather
         flushPendingWeatherSnapshot()
+    }
+
+    /// Sends the phone wall clock to the round display. The device keeps its
+    /// own monotonic clock between synchronizations, so this is low-frequency.
+    @discardableResult
+    private func sendTimeSync() -> Bool {
+        guard protocolReady,
+              peerCapabilities & Self.timeSyncCapability != 0,
+              let codec else { return false }
+        let timeSync = MotoBLETimeSyncInput()
+        timeSync.unixSeconds = UInt32(clamping: Int(Date().timeIntervalSince1970))
+        timeSync.timezoneOffsetSeconds = Int32(TimeZone.current.secondsFromGMT())
+        timeSync.source = 0
+        do {
+            try send(codec.encodeTimeSync(timeSync))
+            return true
+        } catch {
+            recoverFromTransportError(error.localizedDescription)
+            return false
+        }
     }
 
     private func startScan() {
@@ -612,6 +635,10 @@ final class ESP32BLECentral: NSObject {
                 snapshot.negotiatedProtocol = "V1"
                 lastValidDeviceFrameAtMs = Self.monotonicMs()
                 startHeartbeat()
+                lastTimeSyncAtMs = 0
+                if sendTimeSync() {
+                    lastTimeSyncAtMs = Self.monotonicMs()
+                }
                 if let pendingNavigationState {
                     sendNavigationSnapshot(pendingNavigationState)
                 }
@@ -1103,6 +1130,12 @@ final class ESP32BLECentral: NSObject {
                     if self.mapSceneDelivery.timeoutCount >= 3 {
                         self.recoverFromTransportError("周边地图传输未确认，正在重新连接")
                         return
+                    }
+                    if self.lastTimeSyncAtMs == 0 ||
+                        now &- self.lastTimeSyncAtMs >= Self.timeSyncIntervalMs {
+                        if self.sendTimeSync() {
+                            self.lastTimeSyncAtMs = now
+                        }
                     }
                     try self.send(
                         codec.encodeHeartbeat(

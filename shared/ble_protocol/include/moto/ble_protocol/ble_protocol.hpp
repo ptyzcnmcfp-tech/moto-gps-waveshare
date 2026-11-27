@@ -119,6 +119,7 @@ enum class MessageType : std::uint8_t {
   MapScene = 0x14,
   DisplaySettings = 0x15,
   WeatherSnapshot = 0x16,
+  TimeSync = 0x17,
   DeviceCommand = 0x20,
 };
 
@@ -278,6 +279,7 @@ enum Capability : std::uint32_t {
   CapabilityMapScene = 1U << 7U,
   CapabilityDisplaySettings = 1U << 8U,
   CapabilityWeatherSnapshot = 1U << 9U,
+  CapabilityTimeSync = 1U << 10U,
 };
 
 struct ConnectionStatus {
@@ -582,6 +584,20 @@ struct WeatherSnapshot {
   bool operator==(const WeatherSnapshot& rhs) const noexcept;
 };
 
+enum class TimeSyncSource : std::uint8_t {
+  Phone = 0,
+};
+
+struct TimeSync {
+  // POSIX seconds in UTC. The display adds timezone_offset_seconds locally;
+  // the device does not need to persist the wall clock across power loss.
+  std::uint32_t unix_seconds = 0;
+  std::int32_t timezone_offset_seconds = 0;
+  TimeSyncSource source = TimeSyncSource::Phone;
+
+  bool operator==(const TimeSync& rhs) const noexcept;
+};
+
 enum class DeviceCommandKind : std::uint8_t {
   PageSelected = 0,
   Tap = 1,
@@ -619,6 +635,7 @@ using Message = std::variant<ConnectionStatus,
                              MapScene,
                              DisplaySettings,
                              WeatherSnapshot,
+                             TimeSync,
                              DeviceCommand>;
 
 using MessageResult = Result<Message>;

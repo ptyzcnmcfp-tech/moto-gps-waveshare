@@ -107,6 +107,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy) NSArray<MotoBLEWeatherDayInput *> *days;
 @end
 
+@interface MotoBLETimeSyncInput : NSObject
+@property(nonatomic) uint32_t unixSeconds;
+@property(nonatomic) int32_t timezoneOffsetSeconds;
+@property(nonatomic) uint8_t source;
+@end
+
 @interface MotoBLEDeviceCommand : NSObject
 @property(nonatomic, readonly) uint16_t sequence;
 @property(nonatomic, readonly) BOOL ackRequested;
@@ -202,6 +208,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (nullable NSArray<NSData *> *)encodeWeatherSnapshot:(MotoBLEWeatherSnapshotInput *)weather
                                                 error:(NSError **)error;
+
+- (nullable NSArray<NSData *> *)encodeTimeSync:(MotoBLETimeSyncInput *)timeSync
+                                          error:(NSError **)error;
 
 /// Test hook for checking the shared MapScene payload without duplicating its
 /// binary layout in Swift.
