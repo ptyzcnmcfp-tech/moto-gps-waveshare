@@ -140,7 +140,7 @@ final class OpenMeteoWeatherService: @unchecked Sendable {
         calendar.timeZone = timeZone
         let now = Date()
         let currentHour = calendar.date(
-            bySettingHour: calendar.component(.hour, of: now),
+            bySettingHour: calendar.component(.hour, from: now),
             minute: 0,
             second: 0,
             of: now) ?? now
