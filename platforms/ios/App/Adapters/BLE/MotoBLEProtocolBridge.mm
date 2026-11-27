@@ -391,6 +391,30 @@ moto::ble::ConnectionStatus PhoneConnectionStatus(
 }
 @end
 
+@implementation MotoBLEWeatherHourInput
+@end
+
+@implementation MotoBLEWeatherDayInput
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _label = @"";
+  }
+  return self;
+}
+@end
+
+@implementation MotoBLEWeatherSnapshotInput
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _hours = @[];
+    _days = @[];
+  }
+  return self;
+}
+@end
+
 @interface MotoBLEDeviceCommand ()
 @property(nonatomic, readwrite) uint16_t sequence;
 @property(nonatomic, readwrite) BOOL ackRequested;
