@@ -219,7 +219,8 @@ moto::ble::WeatherSnapshot WeatherSnapshotFromInput(
                            moto::ble::kWeatherDayCapacity));
   for (std::uint8_t index = 0; index < weather.day_count; ++index) {
     MotoBLEWeatherDayInput *day = input.days[index];
-    const std::string label = Utf8Prefix(day.label, 7);
+    const std::string label = Utf8Prefix(
+        day.label, moto::ble::kWeatherDayLabelBytes - 1);
     std::memset(weather.day_label[index].data(), 0,
                 moto::ble::kWeatherDayLabelBytes);
     std::memcpy(weather.day_label[index].data(), label.data(),

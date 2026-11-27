@@ -559,7 +559,7 @@ struct DisplaySettings {
 
 constexpr std::size_t kWeatherHourCapacity = 4;
 constexpr std::size_t kWeatherDayCapacity = 2;
-constexpr std::size_t kWeatherDayLabelBytes = 8;
+constexpr std::size_t kWeatherDayLabelBytes = 16;
 constexpr std::size_t kWeatherHourLabelBytes = 6;
 
 struct WeatherSnapshot {

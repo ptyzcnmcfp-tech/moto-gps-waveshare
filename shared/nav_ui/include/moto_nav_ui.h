@@ -58,6 +58,7 @@ typedef enum {
     MOTO_UI_PAGE_SPEED,
     MOTO_UI_PAGE_COMPASS,
     MOTO_UI_PAGE_MUSIC,
+    MOTO_UI_PAGE_WEATHER,
     MOTO_UI_PAGE_COUNT,
 } moto_ui_page_t;
 
@@ -100,12 +101,35 @@ typedef struct {
     uint8_t liked;
 } moto_music_state_t;
 
+#define MOTO_UI_WEATHER_HOUR_CAPACITY 4
+#define MOTO_UI_WEATHER_DAY_CAPACITY 2
+#define MOTO_UI_WEATHER_DAY_LABEL_BYTES 16
+#define MOTO_UI_WEATHER_REFRESH_MS 3600000U
+
+typedef struct {
+    int8_t current_temperature_c;
+    uint8_t current_weather_code;
+    uint8_t current_precipitation_probability;
+    uint8_t hour_count;
+    char hour_label[MOTO_UI_WEATHER_HOUR_CAPACITY][8];
+    uint8_t hour_precipitation_probability[MOTO_UI_WEATHER_HOUR_CAPACITY];
+    int8_t hour_temperature_c[MOTO_UI_WEATHER_HOUR_CAPACITY];
+    uint8_t hour_weather_code[MOTO_UI_WEATHER_HOUR_CAPACITY];
+    uint8_t day_count;
+    char day_label[MOTO_UI_WEATHER_DAY_CAPACITY][MOTO_UI_WEATHER_DAY_LABEL_BYTES];
+    int8_t day_high_temperature_c[MOTO_UI_WEATHER_DAY_CAPACITY];
+    int8_t day_low_temperature_c[MOTO_UI_WEATHER_DAY_CAPACITY];
+    uint8_t day_precipitation_probability[MOTO_UI_WEATHER_DAY_CAPACITY];
+    uint8_t day_weather_code[MOTO_UI_WEATHER_DAY_CAPACITY];
+} moto_weather_state_t;
+
 typedef void (*moto_music_command_callback_t)(moto_music_command_t command,
                                                void *context);
 typedef void (*moto_page_change_callback_t)(moto_ui_page_t page,
                                              void *context);
 typedef void (*moto_demo_change_callback_t)(uint8_t enabled,
                                              void *context);
+typedef void (*moto_arrival_callback_t)(void *context);
 
 typedef struct {
     moto_ui_page_t page;
@@ -162,6 +186,14 @@ void moto_nav_ui_set_page_change_callback(
     moto_page_change_callback_t callback,
     void *context);
 void moto_nav_ui_set_music_state(const moto_music_state_t *state);
+/** Replace the compact weather snapshot shown on the weather page. */
+void moto_nav_ui_set_weather_state(const moto_weather_state_t *state);
+/**
+ * Synchronize the navigation-page clock from the phone. `unix_seconds` is UTC;
+ * `timezone_offset_seconds` is the phone's local offset from UTC.
+ */
+void moto_nav_ui_set_clock(uint32_t unix_seconds,
+                           int32_t timezone_offset_seconds);
 /**
  * Device-side battery snapshot. `percent` is 0..100; pass 255 when the PMIC
  * reports that no battery is connected or the level is unavailable.
@@ -189,6 +221,10 @@ void moto_nav_ui_set_demo_active(uint8_t enabled);
 /** Long-pressing the navigation page toggles this test-build demo source. */
 void moto_nav_ui_set_demo_change_callback(
     moto_demo_change_callback_t callback,
+    void *context);
+/** Fires once when the navigation snapshot reaches the arrived state. */
+void moto_nav_ui_set_arrival_callback(
+    moto_arrival_callback_t callback,
     void *context);
 
 #ifdef __cplusplus

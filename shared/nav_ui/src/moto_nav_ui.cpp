@@ -39,9 +39,36 @@ constexpr std::uint32_t kPageDotsVisibleMs = 5'000;
 // 40 Hz cadence. The previous 40/33 ms mismatch periodically produced a
 // 66 ms visual gap even when both tasks were otherwise keeping up.
 constexpr std::uint32_t kRouteMotionFrameMs = 25;
+constexpr std::uint32_t kClockRefreshMs = 1'000;
 static_assert(LV_DEF_REFR_PERIOD == kRouteMotionFrameMs,
               "LVGL refresh and map motion must use the same cadence");
 constexpr std::uint32_t kConnectionSuccessHoldMs = 920;
+
+enum class WeatherVisual : std::uint8_t {
+    Clear = 0,
+    PartlyCloudy,
+    Cloudy,
+    Fog,
+    Rain,
+    Snow,
+    Storm,
+    Unknown,
+};
+
+WeatherVisual weather_visual_kind(std::uint8_t code) {
+    if(code == 0) return WeatherVisual::Clear;
+    if(code == 1) return WeatherVisual::PartlyCloudy;
+    if(code == 2 || code == 3) return WeatherVisual::Cloudy;
+    if(code == 45 || code == 48) return WeatherVisual::Fog;
+    if((code >= 71 && code <= 77) || code == 85 || code == 86) {
+        return WeatherVisual::Snow;
+    }
+    if(code >= 95) return WeatherVisual::Storm;
+    if((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
+        return WeatherVisual::Rain;
+    }
+    return WeatherVisual::Unknown;
+}
 
 enum class LifecycleVisual : std::uint8_t {
     Hidden = 0,
@@ -128,9 +155,16 @@ struct Ui {
     lv_obj_t *nav_limit = nullptr;
     lv_obj_t *nav_limit_value = nullptr;
     lv_obj_t *nav_progress = nullptr;
-    lv_obj_t *nav_battery = nullptr;
+    lv_obj_t *battery_outline = nullptr;
+    lv_obj_t *battery_cap = nullptr;
+    lv_obj_t *battery_fill = nullptr;
+    lv_obj_t *nav_speed_circle = nullptr;
     lv_obj_t *nav_speed = nullptr;
-    lv_obj_t *nav_speed_unit = nullptr;
+    lv_obj_t *nav_clock = nullptr;
+    lv_timer_t *nav_clock_timer = nullptr;
+    bool clock_synced = false;
+    uint32_t clock_base_unix_seconds = 0;
+    uint32_t clock_base_tick_ms = 0;
 
     // A full-screen empty-state surface replaces the old tiny
     // WAITING FOR PHONE / WAITING FOR ROUTE caption. It is kept inside the
@@ -175,6 +209,18 @@ struct Ui {
     lv_obj_t *music_buttons[4]{};
     lv_obj_t *music_button_labels[4]{};
     moto_music_state_t music{};
+
+    lv_obj_t *weather_current_temp = nullptr;
+    lv_obj_t *weather_current_icon = nullptr;
+    lv_obj_t *weather_current_rain = nullptr;
+    lv_obj_t *weather_hour_labels[MOTO_UI_WEATHER_HOUR_CAPACITY]{};
+    lv_obj_t *weather_hour_icon[MOTO_UI_WEATHER_HOUR_CAPACITY]{};
+    lv_obj_t *weather_hour_temp[MOTO_UI_WEATHER_HOUR_CAPACITY]{};
+    lv_obj_t *weather_day_labels[MOTO_UI_WEATHER_DAY_CAPACITY]{};
+    lv_obj_t *weather_day_icon[MOTO_UI_WEATHER_DAY_CAPACITY]{};
+    lv_obj_t *weather_day_temp[MOTO_UI_WEATHER_DAY_CAPACITY]{};
+    lv_obj_t *weather_day_rain[MOTO_UI_WEATHER_DAY_CAPACITY]{};
+    moto_weather_state_t weather{};
     char music_source_text[32]{};
     char music_title_text[64]{};
     char music_artist_text[48]{};
@@ -185,6 +231,9 @@ struct Ui {
     void *page_callback_context = nullptr;
     moto_demo_change_callback_t demo_callback = nullptr;
     void *demo_callback_context = nullptr;
+    moto_arrival_callback_t arrival_callback = nullptr;
+    void *arrival_callback_context = nullptr;
+    bool arrival_announced = false;
     bool music_page_enabled = true;
     bool demo_active = false;
     bool reduce_motion = false;
@@ -239,7 +288,7 @@ void copy_text(char *destination, std::size_t capacity, const char *source,
     std::snprintf(destination, capacity, "%s", value != nullptr ? value : "");
 }
 
-lv_color_t traffic_color(moto_traffic_t traffic) {
+[[maybe_unused]] lv_color_t traffic_color(moto_traffic_t traffic) {
     switch(traffic) {
         case MOTO_TRAFFIC_CLEAR: return kIce;
         case MOTO_TRAFFIC_SLOW: return kAmber;
@@ -320,7 +369,8 @@ void update_page_dots() {
         // The rider-facing firmware currently exposes only the navigation
         // page. Speed, compass and music pages remain in the shared ABI for
         // protocol compatibility but are not reachable by swipe or dots.
-        const bool available = i == MOTO_UI_PAGE_NAVIGATION;
+        const bool available = i == MOTO_UI_PAGE_NAVIGATION ||
+                               i == MOTO_UI_PAGE_WEATHER;
         if(ui.page_dots_visible && available) {
             lv_obj_remove_flag(ui.page_dots[i], LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -362,8 +412,8 @@ void install_interaction_wake(lv_obj_t *object) {
 
 void show_page(moto_ui_page_t page, bool reveal_on_same_page = false) {
     if(page < MOTO_UI_PAGE_NAVIGATION || page >= MOTO_UI_PAGE_COUNT) return;
-    if(page != MOTO_UI_PAGE_NAVIGATION) {
-        page = MOTO_UI_PAGE_NAVIGATION;
+    if(page != MOTO_UI_PAGE_NAVIGATION && page != MOTO_UI_PAGE_WEATHER) {
+        return;
     }
     const bool changed = page != ui.page;
     ui.page = page;
@@ -383,9 +433,12 @@ void show_page(moto_ui_page_t page, bool reveal_on_same_page = false) {
 void gesture_event(lv_event_t *) {
     lv_indev_t *indev = lv_indev_active();
     if(indev == nullptr) return;
-    // Only the navigation page is exposed in this rider-facing build. Swipes
-    // wake the page affordance but do not navigate to hidden utility pages.
-    if(ui.page_callback != nullptr) {
+    const lv_dir_t direction = lv_indev_get_gesture_dir(indev);
+    if(ui.page == MOTO_UI_PAGE_NAVIGATION && direction == LV_DIR_LEFT) {
+        show_page(MOTO_UI_PAGE_WEATHER, true);
+    } else if(ui.page == MOTO_UI_PAGE_WEATHER && direction == LV_DIR_RIGHT) {
+        show_page(MOTO_UI_PAGE_NAVIGATION, true);
+    } else if(ui.page_callback != nullptr) {
         ui.page_callback(MOTO_UI_PAGE_NAVIGATION, ui.page_callback_context);
     }
     reveal_page_dots();
@@ -1042,6 +1095,155 @@ void draw_disc(lv_layer_t *layer, int x, int y, int diameter,
     lv_draw_rect(layer, &disc, &area);
 }
 
+void draw_weather_cloud(lv_layer_t *layer, const lv_area_t& area,
+                        lv_color_t color, int dx, int dy) {
+    const int center_x = (area.x1 + area.x2) / 2 + dx;
+    const int center_y = (area.y1 + area.y2) / 2 + dy;
+
+    lv_draw_rect_dsc_t base;
+    lv_draw_rect_dsc_init(&base);
+    base.bg_color = color;
+    base.bg_opa = LV_OPA_COVER;
+    base.border_opa = LV_OPA_TRANSP;
+    base.radius = px(5);
+    const lv_area_t base_area{
+        center_x - px(12), center_y + px(1),
+        center_x + px(12), center_y + px(7)};
+    lv_draw_rect(layer, &base, &base_area);
+
+    draw_disc(layer, center_x - px(7), center_y + px(1), px(10),
+              color, LV_OPA_COVER);
+    draw_disc(layer, center_x + px(1), center_y - px(3), px(14),
+              color, LV_OPA_COVER);
+    draw_disc(layer, center_x + px(8), center_y + px(1), px(10),
+              color, LV_OPA_COVER);
+}
+
+void draw_weather_sun(lv_layer_t *layer, const lv_area_t& area,
+                       int dx, int dy) {
+    const int center_x = (area.x1 + area.x2) / 2 + dx;
+    const int center_y = (area.y1 + area.y2) / 2 + dy;
+    draw_disc(layer, center_x, center_y, px(12), kAmber, LV_OPA_COVER);
+
+    lv_draw_line_dsc_t ray;
+    lv_draw_line_dsc_init(&ray);
+    ray.color = kAmber;
+    ray.width = px(2);
+    ray.round_start = 1;
+    ray.round_end = 1;
+    const int ray_inner = px(9);
+    const int ray_outer = px(13);
+    const int rays[8][2] = {
+        {1, 0}, {-1, 0}, {0, 1}, {0, -1},
+        {1, 1}, {-1, -1}, {1, -1}, {-1, 1},
+    };
+    for(const auto &direction : rays) {
+        ray.p1 = {center_x + direction[0] * ray_inner,
+                  center_y + direction[1] * ray_inner};
+        ray.p2 = {center_x + direction[0] * ray_outer,
+                  center_y + direction[1] * ray_outer};
+        lv_draw_line(layer, &ray);
+    }
+}
+
+void draw_weather_icon(lv_event_t *event) {
+    if(lv_event_get_code(event) != LV_EVENT_DRAW_MAIN) return;
+    const auto *code = static_cast<const std::uint8_t *>(
+        lv_event_get_user_data(event));
+    if(code == nullptr) return;
+
+    lv_obj_t *object = lv_event_get_target_obj(event);
+    lv_layer_t *layer = lv_event_get_layer(event);
+    lv_area_t area;
+    lv_obj_get_coords(object, &area);
+    const WeatherVisual kind = weather_visual_kind(*code);
+    const int center_x = (area.x1 + area.x2) / 2;
+    const int center_y = (area.y1 + area.y2) / 2;
+
+    switch(kind) {
+        case WeatherVisual::Clear:
+            draw_weather_sun(layer, area, 0, 0);
+            break;
+        case WeatherVisual::PartlyCloudy:
+            draw_weather_sun(layer, area, -px(7), -px(6));
+            draw_weather_cloud(layer, area, kWhite, px(5), px(5));
+            break;
+        case WeatherVisual::Cloudy:
+        case WeatherVisual::Unknown:
+            draw_weather_cloud(layer, area,
+                               kind == WeatherVisual::Unknown ? kQuiet : kWhite,
+                               0, 0);
+            break;
+        case WeatherVisual::Fog: {
+            draw_weather_cloud(layer, area, kSoft, 0, -px(3));
+            lv_draw_line_dsc_t line;
+            lv_draw_line_dsc_init(&line);
+            line.color = kSoft;
+            line.width = px(2);
+            line.round_start = 1;
+            line.round_end = 1;
+            for(int line_index = 0; line_index < 3; ++line_index) {
+                const int y = center_y + px(4 + line_index * 3);
+                line.p1 = {center_x - px(9), y};
+                line.p2 = {center_x + px(9), y};
+                lv_draw_line(layer, &line);
+            }
+            break;
+        }
+        case WeatherVisual::Rain: {
+            draw_weather_cloud(layer, area, kWhite, 0, -px(3));
+            lv_draw_line_dsc_t drop;
+            lv_draw_line_dsc_init(&drop);
+            drop.color = kIce;
+            drop.width = px(2);
+            drop.round_start = 1;
+            drop.round_end = 1;
+            for(int drop_index = 0; drop_index < 3; ++drop_index) {
+                const int x = center_x - px(7) + drop_index * px(7);
+                drop.p1 = {x, center_y + px(4)};
+                drop.p2 = {x - px(2), center_y + px(10)};
+                lv_draw_line(layer, &drop);
+            }
+            break;
+        }
+        case WeatherVisual::Snow: {
+            draw_weather_cloud(layer, area, kWhite, 0, -px(3));
+            for(int snow_index = 0; snow_index < 3; ++snow_index) {
+                const int x = center_x - px(7) + snow_index * px(7);
+                draw_disc(layer, x, center_y + px(7), px(3),
+                          kWhite, LV_OPA_COVER);
+            }
+            break;
+        }
+        case WeatherVisual::Storm: {
+            draw_weather_cloud(layer, area, kWhite, 0, -px(3));
+            lv_draw_triangle_dsc_t bolt;
+            lv_draw_triangle_dsc_init(&bolt);
+            bolt.color = kAmber;
+            bolt.opa = LV_OPA_COVER;
+            bolt.p[0] = {static_cast<lv_value_precise_t>(center_x + px(2)),
+                         static_cast<lv_value_precise_t>(center_y + px(2))};
+            bolt.p[1] = {static_cast<lv_value_precise_t>(center_x - px(3)),
+                         static_cast<lv_value_precise_t>(center_y + px(9))};
+            bolt.p[2] = {static_cast<lv_value_precise_t>(center_x + px(3)),
+                         static_cast<lv_value_precise_t>(center_y + px(9))};
+            lv_draw_triangle(layer, &bolt);
+            break;
+        }
+    }
+}
+
+lv_obj_t *create_weather_icon(lv_obj_t *parent, std::uint8_t *code) {
+    lv_obj_t *object = lv_obj_create(parent);
+    lv_obj_remove_style_all(object);
+    lv_obj_remove_flag(object, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(object, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(object, px(34), px(30));
+    lv_obj_set_user_data(object, code);
+    lv_obj_add_event_cb(object, draw_weather_icon, LV_EVENT_ALL, code);
+    return object;
+}
+
 void draw_phone_body(lv_layer_t *layer, const lv_area_t& area,
                      lv_color_t color, lv_opa_t opacity) {
     const lv_area_t phone = {
@@ -1242,6 +1444,7 @@ void apply_lifecycle_content(LifecycleVisual visual) {
 }
 
 void lifecycle_fade_in();
+void set_nav_clock_visible(bool visible);
 
 void lifecycle_fade_out_complete(lv_anim_t *) {
     if(ui.nav_lifecycle == nullptr) return;
@@ -1332,6 +1535,10 @@ LifecycleVisual desired_lifecycle_visual() {
 }
 
 void refresh_lifecycle() {
+    // Connection/ready overlays are full-screen siblings created after the
+    // clock. Keep the clock state aligned with guidance before transitioning
+    // the overlay so an unguided page never hides it behind the black layer.
+    set_nav_clock_visible(!ui.navigation_has_guidance);
     transition_lifecycle(desired_lifecycle_visual());
 }
 
@@ -1370,6 +1577,41 @@ void set_navigation_guidance_visible(bool visible) {
     if(!visible) lv_obj_add_flag(ui.nav_limit, LV_OBJ_FLAG_HIDDEN);
 }
 
+void update_nav_clock() {
+    if(ui.nav_clock == nullptr) return;
+    char text[16];
+    if(!ui.clock_synced) {
+        std::snprintf(text, sizeof(text), "--:--");
+    } else {
+        const uint32_t elapsed_ms = lv_tick_get() - ui.clock_base_tick_ms;
+        const uint32_t local_seconds =
+            ui.clock_base_unix_seconds + elapsed_ms / 1'000U;
+        const uint32_t seconds_of_day = local_seconds % 86'400U;
+        const unsigned hour = static_cast<unsigned>(seconds_of_day / 3'600U);
+        const unsigned minute =
+            static_cast<unsigned>((seconds_of_day % 3'600U) / 60U);
+        std::snprintf(text, sizeof(text), "%02u:%02u", hour, minute);
+    }
+    lv_label_set_text(ui.nav_clock, text);
+}
+
+void nav_clock_tick(lv_timer_t *) {
+    if(ui.nav_clock != nullptr &&
+       !lv_obj_has_flag(ui.nav_clock, LV_OBJ_FLAG_HIDDEN)) {
+        update_nav_clock();
+    }
+}
+
+void set_nav_clock_visible(bool visible) {
+    if(ui.nav_clock == nullptr) return;
+    if(visible) {
+        update_nav_clock();
+        lv_obj_remove_flag(ui.nav_clock, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(ui.nav_clock, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void update_nav_status(const moto_ui_state_t *state) {
     const char *text = "";
     lv_color_t color = kQuiet;
@@ -1404,10 +1646,12 @@ void update_navigation(const moto_ui_state_t *state) {
     update_maneuver(state->maneuver);
     update_nav_status(state);
 
-    char speed[16];
-    std::snprintf(speed, sizeof(speed), "%u",
-                  static_cast<unsigned>(state->speed_kph));
-    lv_label_set_text(ui.nav_speed, speed);
+    const unsigned speed = std::min<unsigned>(state->speed_kph, 99U);
+    char speed_text[8];
+    std::snprintf(speed_text, sizeof(speed_text), "%u", speed);
+    lv_label_set_text(ui.nav_speed, speed_text);
+    lv_obj_set_style_border_color(ui.nav_speed_circle,
+                                  speed <= 60U ? kGreen : kRed, 0);
 
     // Never suggest "go straight for 0 m" while there is no route. Waiting is
     // a connection state, not actionable navigation guidance.
@@ -1418,6 +1662,7 @@ void update_navigation(const moto_ui_state_t *state) {
     ui.navigation_route_request_in_flight =
         state->route_request_in_flight != 0;
     set_navigation_guidance_visible(has_guidance);
+    set_nav_clock_visible(!has_guidance);
     refresh_lifecycle();
     if(!has_guidance) return;
 
@@ -1442,8 +1687,6 @@ void update_navigation(const moto_ui_state_t *state) {
 
     lv_arc_set_value(ui.nav_progress,
                      std::min<int>(100, state->route_progress_percent));
-    lv_obj_set_style_arc_color(ui.nav_progress, traffic_color(state->traffic),
-                               LV_PART_INDICATOR);
 
     if(state->speed_limit_kph > 0) {
         char limit[8];
@@ -1619,16 +1862,28 @@ void create_navigation_page() {
     lv_obj_set_style_text_align(ui.nav_status, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(ui.nav_status, LV_ALIGN_TOP_MID, 0, px(16));
 
-    ui.nav_battery = make_label(page, &lv_font_montserrat_16, kSoft, "—");
-    lv_obj_set_style_text_letter_space(ui.nav_battery, px(1), 0);
-    lv_obj_align(ui.nav_battery, LV_ALIGN_TOP_RIGHT, px(-42), px(18));
+    ui.nav_clock = make_label(page, &lv_font_montserrat_28, kWhite, "--:--");
+    lv_obj_set_width(ui.nav_clock, px(132));
+    lv_obj_set_style_text_align(ui.nav_clock, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(ui.nav_clock, LV_ALIGN_TOP_MID, 0, px(26));
+    lv_obj_add_flag(ui.nav_clock, LV_OBJ_FLAG_HIDDEN);
 
-    ui.nav_speed = make_label(page, &lv_font_montserrat_28, kWhite, "0");
-    lv_obj_align(ui.nav_speed, LV_ALIGN_BOTTOM_RIGHT, px(-48), px(-58));
-    ui.nav_speed_unit = make_label(page, &lv_font_montserrat_16, kQuiet, "km/h");
-    lv_obj_set_style_text_letter_space(ui.nav_speed_unit, px(1), 0);
-    lv_obj_align_to(ui.nav_speed_unit, ui.nav_speed, LV_ALIGN_OUT_RIGHT_BOTTOM,
-                    px(6), px(-4));
+    ui.nav_speed_circle = lv_obj_create(page);
+    lv_obj_set_size(ui.nav_speed_circle, px(64), px(64));
+    lv_obj_align(ui.nav_speed_circle, LV_ALIGN_RIGHT_MID, px(16), px(0));
+    lv_obj_set_style_radius(ui.nav_speed_circle, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(ui.nav_speed_circle, kBlack, 0);
+    lv_obj_set_style_bg_opa(ui.nav_speed_circle, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(ui.nav_speed_circle, kGreen, 0);
+    lv_obj_set_style_border_width(ui.nav_speed_circle, px(3), 0);
+    lv_obj_set_style_pad_all(ui.nav_speed_circle, 0, 0);
+    lv_obj_clear_flag(ui.nav_speed_circle, LV_OBJ_FLAG_CLICKABLE);
+    ui.nav_speed = make_label(ui.nav_speed_circle, &lv_font_montserrat_30, kWhite, "0");
+    lv_obj_set_style_text_align(ui.nav_speed, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_outline_stroke_color(ui.nav_speed, kWhite, 0);
+    lv_obj_set_style_text_outline_stroke_width(ui.nav_speed, 1, 0);
+    lv_obj_set_style_text_outline_stroke_opa(ui.nav_speed, LV_OPA_COVER, 0);
+    lv_obj_align(ui.nav_speed, LV_ALIGN_CENTER, px(-4), 0);
 
     // The next action is the navigation page's single visual hero. The short
     // road window above is deliberately quieter and contains no fake side
@@ -1661,18 +1916,21 @@ void create_navigation_page() {
     lv_obj_center(ui.nav_limit_value);
 
     ui.nav_progress = lv_arc_create(page);
-    lv_obj_set_size(ui.nav_progress, px(316), px(316));
+    // Keep the ring inside the circular panel. A 452 design-unit diameter maps
+    // to roughly 585 physical pixels and was clipped away on the AMOLED.
+    // 336 design units leave a small visible margin around the complete ring.
+    lv_obj_set_size(ui.nav_progress, px(336), px(336));
     lv_obj_center(ui.nav_progress);
-    lv_arc_set_rotation(ui.nav_progress, 48);
-    lv_arc_set_bg_angles(ui.nav_progress, 0, 84);
+    lv_arc_set_rotation(ui.nav_progress, 90);
+    lv_arc_set_bg_angles(ui.nav_progress, 0, 360);
     lv_arc_set_range(ui.nav_progress, 0, 100);
     lv_arc_set_value(ui.nav_progress, 24);
     lv_obj_remove_style(ui.nav_progress, nullptr, LV_PART_KNOB);
     lv_obj_clear_flag(ui.nav_progress, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_width(ui.nav_progress, px(3), LV_PART_MAIN);
-    lv_obj_set_style_arc_color(ui.nav_progress, kGraphite, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(ui.nav_progress, px(4), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(ui.nav_progress, kIce, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(ui.nav_progress, px(6), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(ui.nav_progress, kGreen, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(ui.nav_progress, px(6), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(ui.nav_progress, kAmber, LV_PART_INDICATOR);
     lv_obj_move_to_index(ui.nav_progress, 0);
 
     // Connection lifecycle overlay. The composition follows the same circular
@@ -1688,12 +1946,12 @@ void create_navigation_page() {
         ui.nav_lifecycle, &lv_font_montserrat_16, kQuiet,
         "MOTO GPS / PHONE LINK");
     lv_obj_set_style_text_letter_space(ui.nav_lifecycle_kicker, px(2), 0);
-    lv_obj_align(ui.nav_lifecycle_kicker, LV_ALIGN_TOP_MID, 0, px(39));
+    lv_obj_align(ui.nav_lifecycle_kicker, LV_ALIGN_TOP_MID, 0, px(62));
 
     ui.nav_lifecycle_symbol = lv_obj_create(ui.nav_lifecycle);
     lv_obj_remove_style_all(ui.nav_lifecycle_symbol);
     lv_obj_set_size(ui.nav_lifecycle_symbol, px(150), px(150));
-    lv_obj_align(ui.nav_lifecycle_symbol, LV_ALIGN_TOP_MID, 0, px(61));
+    lv_obj_align(ui.nav_lifecycle_symbol, LV_ALIGN_TOP_MID, 0, px(84));
     lv_obj_clear_flag(ui.nav_lifecycle_symbol, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(ui.nav_lifecycle_symbol, draw_connection_symbol,
                         LV_EVENT_DRAW_MAIN_END, nullptr);
@@ -1704,22 +1962,30 @@ void create_navigation_page() {
     lv_obj_set_style_text_align(ui.nav_lifecycle_title,
                                 LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_letter_space(ui.nav_lifecycle_title, px(2), 0);
-    lv_obj_align(ui.nav_lifecycle_title, LV_ALIGN_TOP_MID, 0, px(231));
+    lv_obj_align(ui.nav_lifecycle_title, LV_ALIGN_TOP_MID, 0, px(238));
 
     ui.nav_lifecycle_subtitle = make_label(
         ui.nav_lifecycle, &moto_font_nav_16, kSoft, "请打开手机应用");
     lv_obj_set_width(ui.nav_lifecycle_subtitle, px(280));
     lv_obj_set_style_text_align(ui.nav_lifecycle_subtitle,
                                 LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(ui.nav_lifecycle_subtitle, LV_ALIGN_TOP_MID, 0, px(278));
+    lv_obj_align(ui.nav_lifecycle_subtitle, LV_ALIGN_TOP_MID, 0, px(286));
 
     ui.nav_lifecycle_timer = lv_timer_create(lifecycle_tick, 40, nullptr);
+    ui.nav_clock_timer = lv_timer_create(nav_clock_tick, kClockRefreshMs, nullptr);
     ui.nav_success_timer = lv_timer_create(connection_success_timeout,
                                             kConnectionSuccessHoldMs,
                                             nullptr);
     lv_timer_pause(ui.nav_success_timer);
     apply_lifecycle_content(LifecycleVisual::PhoneOffline);
     ui.lifecycle_target = LifecycleVisual::PhoneOffline;
+
+    // The lifecycle layer is created after the clock and would otherwise cover
+    // it. Move the clock to the top of the navigation page after all overlay
+    // children exist, then show the unguided placeholder until phone time is
+    // synchronized.
+    lv_obj_move_foreground(ui.nav_clock);
+    set_nav_clock_visible(true);
 }
 
 void create_speed_page() {
@@ -1798,6 +2064,135 @@ void create_compass_page() {
     ui.compass_speed = make_label(page, &lv_font_montserrat_20, kWhite, "72 km/h");
     lv_obj_set_style_text_letter_space(ui.compass_speed, px(1), 0);
     lv_obj_align(ui.compass_speed, LV_ALIGN_CENTER, 0, px(57));
+}
+
+void update_weather_page() {
+    if(ui.screen == nullptr) return;
+    char text[24];
+
+    if(ui.weather.hour_count == 0 && ui.weather.day_count == 0) {
+        ui.weather.current_weather_code = 255;
+        lv_label_set_text(ui.weather_current_temp, "--");
+        lv_label_set_text(ui.weather_current_rain, "");
+        lv_obj_invalidate(ui.weather_current_icon);
+        for(std::uint8_t i = 0; i < MOTO_UI_WEATHER_HOUR_CAPACITY; ++i) {
+            ui.weather.hour_weather_code[i] = 255;
+            lv_label_set_text(ui.weather_hour_labels[i], "--:--");
+            lv_obj_invalidate(ui.weather_hour_icon[i]);
+            lv_label_set_text(ui.weather_hour_temp[i], "--");
+        }
+        for(std::uint8_t i = 0; i < MOTO_UI_WEATHER_DAY_CAPACITY; ++i) {
+            ui.weather.day_weather_code[i] = 255;
+            lv_label_set_text(ui.weather_day_labels[i], "--");
+            lv_obj_invalidate(ui.weather_day_icon[i]);
+            lv_label_set_text(ui.weather_day_temp[i], "--");
+            lv_label_set_text(ui.weather_day_rain[i], "--");
+        }
+        return;
+    }
+
+    std::snprintf(text, sizeof(text), "%d°",
+                  static_cast<int>(ui.weather.current_temperature_c));
+    lv_label_set_text(ui.weather_current_temp, text);
+    lv_obj_invalidate(ui.weather_current_icon);
+    std::snprintf(text, sizeof(text), "降雨 %u%%",
+                  static_cast<unsigned>(ui.weather.current_precipitation_probability));
+    lv_label_set_text(ui.weather_current_rain, text);
+
+    for(std::uint8_t i = 0; i < MOTO_UI_WEATHER_HOUR_CAPACITY; ++i) {
+        if(i < ui.weather.hour_count) {
+            lv_label_set_text(ui.weather_hour_labels[i],
+                              ui.weather.hour_label[i][0] != '\0'
+                                  ? ui.weather.hour_label[i]
+                                  : "--:--");
+            lv_obj_invalidate(ui.weather_hour_icon[i]);
+            std::snprintf(text, sizeof(text), "%d°",
+                          static_cast<int>(ui.weather.hour_temperature_c[i]));
+            lv_label_set_text(ui.weather_hour_temp[i], text);
+        } else {
+            ui.weather.hour_weather_code[i] = 255;
+            lv_label_set_text(ui.weather_hour_labels[i], "--:--");
+            lv_obj_invalidate(ui.weather_hour_icon[i]);
+            lv_label_set_text(ui.weather_hour_temp[i], "--");
+        }
+    }
+
+    for(std::uint8_t i = 0; i < MOTO_UI_WEATHER_DAY_CAPACITY; ++i) {
+        if(i < ui.weather.day_count) {
+            const char *label = ui.weather.day_label[i][0] != '\0'
+                                    ? ui.weather.day_label[i]
+                                    : "--";
+            lv_label_set_text(ui.weather_day_labels[i], label);
+            lv_obj_invalidate(ui.weather_day_icon[i]);
+            std::snprintf(text, sizeof(text), "%d/%d°",
+                          static_cast<int>(ui.weather.day_high_temperature_c[i]),
+                          static_cast<int>(ui.weather.day_low_temperature_c[i]));
+            lv_label_set_text(ui.weather_day_temp[i], text);
+            std::snprintf(text, sizeof(text), "%u%%",
+                          static_cast<unsigned>(ui.weather.day_precipitation_probability[i]));
+            lv_label_set_text(ui.weather_day_rain[i], text);
+        } else {
+            ui.weather.day_weather_code[i] = 255;
+            lv_label_set_text(ui.weather_day_labels[i], "--");
+            lv_obj_invalidate(ui.weather_day_icon[i]);
+            lv_label_set_text(ui.weather_day_temp[i], "--");
+            lv_label_set_text(ui.weather_day_rain[i], "--");
+        }
+    }
+}
+
+void create_weather_page() {
+    lv_obj_t *page = ui.pages[MOTO_UI_PAGE_WEATHER];
+    lv_obj_t *title = make_label(page, &moto_font_nav_16, kQuiet, "天气");
+    lv_obj_set_style_text_letter_space(title, px(4), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, px(14));
+
+    ui.weather_current_temp = make_label(page, &lv_font_montserrat_48, kWhite, "--");
+    lv_obj_align(ui.weather_current_temp, LV_ALIGN_TOP_MID, 0, px(34));
+    ui.weather_current_icon = create_weather_icon(page, &ui.weather.current_weather_code);
+    lv_obj_align(ui.weather_current_icon, LV_ALIGN_TOP_MID, 0, px(68));
+    ui.weather_current_rain = make_label(page, &moto_font_nav_16, kSoft, "降雨 --%");
+    lv_obj_align(ui.weather_current_rain, LV_ALIGN_TOP_MID, 0, px(100));
+
+    lv_obj_t *hour_title = make_label(page, &moto_font_nav_16, kQuiet, "未来4时");
+    lv_obj_set_style_text_letter_space(hour_title, px(2), 0);
+    lv_obj_align(hour_title, LV_ALIGN_TOP_MID, 0, px(124));
+
+    for(std::uint8_t i = 0; i < MOTO_UI_WEATHER_HOUR_CAPACITY; ++i) {
+        const int x = px(6 + i * 88);
+        ui.weather_hour_labels[i] = make_label(page, &lv_font_montserrat_20, kQuiet, "--:--");
+        lv_obj_set_width(ui.weather_hour_labels[i], px(76));
+        lv_obj_set_style_text_align(ui.weather_hour_labels[i],
+                                    LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_pos(ui.weather_hour_labels[i], x, px(142));
+        ui.weather_hour_icon[i] = create_weather_icon(
+            page, &ui.weather.hour_weather_code[i]);
+        lv_obj_set_pos(ui.weather_hour_icon[i], x + px(21), px(164));
+        ui.weather_hour_temp[i] = make_label(page, &lv_font_montserrat_20, kWhite, "--");
+        lv_obj_set_width(ui.weather_hour_temp[i], px(76));
+        lv_obj_set_style_text_align(ui.weather_hour_temp[i],
+                                    LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_pos(ui.weather_hour_temp[i], x, px(198));
+    }
+
+    lv_obj_t *day_title = make_label(page, &moto_font_nav_16, kQuiet, "未来2天");
+    lv_obj_set_style_text_letter_space(day_title, px(2), 0);
+    lv_obj_align(day_title, LV_ALIGN_TOP_MID, 0, px(226));
+
+    for(std::uint8_t i = 0; i < MOTO_UI_WEATHER_DAY_CAPACITY; ++i) {
+        const int y = px(250 + i * 24);
+        ui.weather_day_labels[i] = make_label(page, &moto_font_nav_16, kWhite,
+                                              "--");
+        lv_obj_set_pos(ui.weather_day_labels[i], px(28), y);
+        ui.weather_day_icon[i] = create_weather_icon(
+            page, &ui.weather.day_weather_code[i]);
+        lv_obj_set_pos(ui.weather_day_icon[i], px(99), y);
+        ui.weather_day_temp[i] = make_label(page, &lv_font_montserrat_20, kSoft, "--");
+        lv_obj_set_pos(ui.weather_day_temp[i], px(180), y);
+        ui.weather_day_rain[i] = make_label(page, &lv_font_montserrat_16, kIce, "--");
+        lv_obj_set_pos(ui.weather_day_rain[i], px(274), y);
+    }
+    update_weather_page();
 }
 
 void create_music_page() {
@@ -1901,6 +2296,10 @@ extern "C" void moto_nav_ui_show_boot_screen(void) {
         lv_timer_delete(ui.nav_lifecycle_timer);
         ui.nav_lifecycle_timer = nullptr;
     }
+    if(ui.nav_clock_timer != nullptr) {
+        lv_timer_delete(ui.nav_clock_timer);
+        ui.nav_clock_timer = nullptr;
+    }
     if(ui.nav_success_timer != nullptr) {
         lv_timer_delete(ui.nav_success_timer);
         ui.nav_success_timer = nullptr;
@@ -1979,6 +2378,10 @@ extern "C" void moto_nav_ui_show_power_off_screen(void) {
         lv_timer_delete(ui.nav_lifecycle_timer);
         ui.nav_lifecycle_timer = nullptr;
     }
+    if(ui.nav_clock_timer != nullptr) {
+        lv_timer_delete(ui.nav_clock_timer);
+        ui.nav_clock_timer = nullptr;
+    }
     if(ui.nav_success_timer != nullptr) {
         lv_timer_delete(ui.nav_success_timer);
         ui.nav_success_timer = nullptr;
@@ -2020,6 +2423,41 @@ extern "C" void moto_nav_ui_create(void) {
     create_speed_page();
     create_compass_page();
     create_music_page();
+    create_weather_page();
+
+    ui.battery_outline = lv_obj_create(ui.screen);
+    lv_obj_remove_style_all(ui.battery_outline);
+    lv_obj_set_size(ui.battery_outline, px(40), px(18));
+    lv_obj_set_style_border_color(ui.battery_outline, kWhite, 0);
+    lv_obj_set_style_border_width(ui.battery_outline, px(2), 0);
+    lv_obj_set_style_radius(ui.battery_outline, px(4), 0);
+    lv_obj_set_style_pad_all(ui.battery_outline, px(2), 0);
+    lv_obj_set_style_bg_color(ui.battery_outline, kBlack, 0);
+    lv_obj_set_style_bg_opa(ui.battery_outline, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(ui.battery_outline, LV_OBJ_FLAG_CLICKABLE);
+    // Move the phone-style indicator another 5 physical pixels lower without
+    // changing the reserved bottom gap for the page dots.
+    lv_obj_align(ui.battery_outline, LV_ALIGN_BOTTOM_MID, 0, -px(44) + 10);
+
+    ui.battery_cap = lv_obj_create(ui.screen);
+    lv_obj_remove_style_all(ui.battery_cap);
+    lv_obj_set_size(ui.battery_cap, px(5), px(9));
+    lv_obj_set_style_radius(ui.battery_cap, px(1), 0);
+    lv_obj_set_style_bg_color(ui.battery_cap, kWhite, 0);
+    lv_obj_set_style_bg_opa(ui.battery_cap, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(ui.battery_cap, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align_to(ui.battery_cap, ui.battery_outline,
+                    LV_ALIGN_OUT_RIGHT_MID, px(2), 0);
+
+    ui.battery_fill = lv_obj_create(ui.battery_outline);
+    lv_obj_remove_style_all(ui.battery_fill);
+    lv_obj_set_style_bg_color(ui.battery_fill, kWhite, 0);
+    lv_obj_set_style_bg_opa(ui.battery_fill, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(ui.battery_fill, px(2), 0);
+    lv_obj_set_align(ui.battery_fill, LV_ALIGN_LEFT_MID);
+    lv_obj_set_height(ui.battery_fill, lv_pct(100));
+    lv_obj_set_width(ui.battery_fill, lv_pct(24));
+
     create_page_dots();
     // Press events are delivered to the topmost object under the finger, not
     // necessarily to its page. Register once across the finished tree so any
@@ -2042,6 +2480,18 @@ extern "C" void moto_nav_ui_create(void) {
 
 extern "C" void moto_nav_ui_set_state(const moto_ui_state_t *state) {
     if(state == nullptr || ui.screen == nullptr) return;
+    const bool arrived = state->mode == MOTO_UI_ARRIVED ||
+                          state->maneuver == MOTO_MANEUVER_ARRIVE;
+    if(arrived) {
+        if(!ui.arrival_announced) {
+            ui.arrival_announced = true;
+            if(ui.arrival_callback != nullptr) {
+                ui.arrival_callback(ui.arrival_callback_context);
+            }
+        }
+    } else {
+        ui.arrival_announced = false;
+    }
     show_page(state->page);
     // Hidden pages do not need to be invalidated. Page changes immediately
     // apply a fresh snapshot through PhoneNavBridge, so this keeps every page
@@ -2051,6 +2501,7 @@ extern "C" void moto_nav_ui_set_state(const moto_ui_state_t *state) {
         case MOTO_UI_PAGE_SPEED: update_speedometer(state); break;
         case MOTO_UI_PAGE_COMPASS: update_compass(state); break;
         case MOTO_UI_PAGE_MUSIC:
+        case MOTO_UI_PAGE_WEATHER:
         case MOTO_UI_PAGE_COUNT: break;
     }
 }
@@ -2126,21 +2577,26 @@ extern "C" void moto_nav_ui_set_page_change_callback(
 extern "C" void moto_nav_ui_set_battery_state(uint8_t percent,
                                               uint8_t battery_present,
                                               uint8_t charging) {
-    if(ui.screen == nullptr || ui.nav_battery == nullptr) return;
-    if(battery_present == 0 || percent > 100U) {
-        lv_label_set_text(ui.nav_battery, "—");
-        lv_obj_set_style_text_color(ui.nav_battery, kQuiet, 0);
+    if(ui.screen == nullptr ||
+       ui.battery_outline == nullptr || ui.battery_cap == nullptr ||
+       ui.battery_fill == nullptr) {
         return;
     }
-    char text[20];
-    std::snprintf(text, sizeof(text), "%s%u%%",
-                  charging != 0 ? "+" : "",
-                  static_cast<unsigned>(percent));
-    lv_label_set_text(ui.nav_battery, text);
-    lv_obj_set_style_text_color(ui.nav_battery,
-                                percent <= 20 ? kRed
-                                : percent <= 50 ? kAmber
-                                : kGreen, 0);
+    if(battery_present == 0 || percent > 100U) {
+        lv_obj_set_style_border_color(ui.battery_outline, kQuiet, 0);
+        lv_obj_set_style_bg_color(ui.battery_cap, kQuiet, 0);
+        lv_obj_set_style_bg_color(ui.battery_fill, kQuiet, 0);
+        lv_obj_set_width(ui.battery_fill, lv_pct(0));
+        return;
+    }
+
+    const bool low_battery = percent <= 20U;
+    const lv_color_t color = low_battery ? kRed
+                           : charging != 0 ? kGreen : kWhite;
+    lv_obj_set_style_border_color(ui.battery_outline, color, 0);
+    lv_obj_set_style_bg_color(ui.battery_cap, color, 0);
+    lv_obj_set_style_bg_color(ui.battery_fill, color, 0);
+    lv_obj_set_width(ui.battery_fill, lv_pct(static_cast<int>(percent)));
 }
 
 extern "C" void moto_nav_ui_set_display_settings(
@@ -2172,6 +2628,42 @@ extern "C" void moto_nav_ui_set_music_state(const moto_music_state_t *state) {
     update_music_view();
 }
 
+extern "C" void moto_nav_ui_set_clock(uint32_t unix_seconds,
+                                      int32_t timezone_offset_seconds) {
+    if(ui.screen == nullptr || ui.nav_clock == nullptr) return;
+    const int64_t local_seconds =
+        static_cast<int64_t>(unix_seconds) + timezone_offset_seconds;
+    ui.clock_base_unix_seconds =
+        local_seconds > 0 ? static_cast<uint32_t>(local_seconds) : 0U;
+    ui.clock_base_tick_ms = lv_tick_get();
+    ui.clock_synced = true;
+    update_nav_clock();
+    if(!ui.navigation_has_guidance) {
+        set_nav_clock_visible(true);
+    }
+}
+
+extern "C" void moto_nav_ui_set_weather_state(const moto_weather_state_t *state) {
+    if(state == nullptr || ui.screen == nullptr) return;
+    ui.weather = *state;
+    ui.weather.hour_count = std::min<std::uint8_t>(
+        ui.weather.hour_count, MOTO_UI_WEATHER_HOUR_CAPACITY);
+    ui.weather.day_count = std::min<std::uint8_t>(
+        ui.weather.day_count, MOTO_UI_WEATHER_DAY_CAPACITY);
+    for(std::uint8_t i = 0; i < ui.weather.day_count; ++i) {
+        ui.weather.day_label[i][sizeof(ui.weather.day_label[i]) - 1] = '\0';
+    }
+    for(std::uint8_t i = 0; i < ui.weather.hour_count; ++i) {
+        ui.weather.hour_label[i][sizeof(ui.weather.hour_label[i]) - 1] = '\0';
+        if(ui.weather.hour_label[i][0] == '\0') {
+            std::snprintf(ui.weather.hour_label[i],
+                          sizeof(ui.weather.hour_label[i]), "%u:00",
+                          static_cast<unsigned>(i));
+        }
+    }
+    update_weather_page();
+}
+
 extern "C" void moto_nav_ui_set_music_page_enabled(uint8_t enabled) {
     if(ui.screen == nullptr) return;
     ui.music_page_enabled = enabled != 0;
@@ -2196,4 +2688,10 @@ extern "C" void moto_nav_ui_set_demo_change_callback(
     moto_demo_change_callback_t callback, void *context) {
     ui.demo_callback = callback;
     ui.demo_callback_context = context;
+}
+
+extern "C" void moto_nav_ui_set_arrival_callback(
+    moto_arrival_callback_t callback, void *context) {
+    ui.arrival_callback = callback;
+    ui.arrival_callback_context = context;
 }
