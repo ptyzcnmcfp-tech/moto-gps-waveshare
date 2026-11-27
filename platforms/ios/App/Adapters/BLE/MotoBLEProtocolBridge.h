@@ -85,6 +85,7 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 @interface MotoBLEWeatherHourInput : NSObject
+@property(nonatomic, copy) NSString *label;
 @property(nonatomic) uint8_t precipitationProbability;
 @property(nonatomic) int8_t temperatureC;
 @end

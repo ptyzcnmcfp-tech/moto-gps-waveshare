@@ -195,20 +195,27 @@ final class AppModel: ObservableObject {
     func refreshWeather() {
         weatherRefreshTask?.cancel()
         weatherRefreshTask = Task { @MainActor [weak self] in
+            var consecutiveFailures = 0
             while !Task.isCancelled {
                 guard let self else { return }
                 do {
                     let forecast = try await self.weatherService.fetchForecast(
                         for: self.searchLocation.latestPoint)
                     guard !Task.isCancelled else { return }
+                    consecutiveFailures = 0
                     self.latestWeather = forecast
                     self.bluetooth.sendWeatherSnapshot(
                         self.makeWeatherSnapshotInput(forecast))
+                    try? await Task.sleep(for: .seconds(3_600))
                 } catch {
-                    // The phone does not display weather. Keep the last valid
-                    // snapshot on the round display and retry on the hourly cycle.
+                    // Keep the last valid snapshot on the round display. A short
+                    // retry avoids waiting an hour after a cold start, temporary
+                    // location fix, or BLE/network hiccup; successful refreshes
+                    // then return to the hourly cycle.
+                    consecutiveFailures += 1
+                    let retrySeconds = min(30, 10 * consecutiveFailures)
+                    try? await Task.sleep(for: .seconds(retrySeconds))
                 }
-                try? await Task.sleep(for: .seconds(3_600))
             }
         }
     }
@@ -224,6 +231,7 @@ final class AppModel: ObservableObject {
 
         let hours = forecast.next24Hours.prefix(4).map { hour in
             let item = MotoBLEWeatherHourInput()
+            item.label = hour.hourLabel
             item.precipitationProbability =
                 Self.clampedProbability(hour.precipitationProbability)
             item.temperatureC = Self.clampedTemperature(hour.temperature)

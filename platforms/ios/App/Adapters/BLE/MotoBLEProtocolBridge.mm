@@ -203,6 +203,11 @@ moto::ble::WeatherSnapshot WeatherSnapshotFromInput(
                            moto::ble::kWeatherHourCapacity));
   for (std::uint8_t index = 0; index < weather.hour_count; ++index) {
     MotoBLEWeatherHourInput *hour = input.hours[index];
+    const std::string label = Utf8Prefix(hour.label, 5);
+    std::memset(weather.hour_label[index].data(), 0,
+                moto::ble::kWeatherHourLabelBytes);
+    std::memcpy(weather.hour_label[index].data(), label.data(),
+                label.size());
     weather.hour_precipitation_probability[index] =
         hour.precipitationProbability;
     weather.hour_temperature_c[index] = hour.temperatureC;

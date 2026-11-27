@@ -558,12 +558,15 @@ struct DisplaySettings {
 constexpr std::size_t kWeatherHourCapacity = 4;
 constexpr std::size_t kWeatherDayCapacity = 2;
 constexpr std::size_t kWeatherDayLabelBytes = 8;
+constexpr std::size_t kWeatherHourLabelBytes = 6;
 
 struct WeatherSnapshot {
   std::int8_t current_temperature_c = 0;
   std::uint8_t current_precipitation_probability = 0;
   std::uint8_t current_weather_code = 0;
   std::uint8_t hour_count = 0;
+  std::array<std::array<char, kWeatherHourLabelBytes>, kWeatherHourCapacity>
+      hour_label{};
   std::array<std::uint8_t, kWeatherHourCapacity>
       hour_precipitation_probability{};
   std::array<std::int8_t, kWeatherHourCapacity> hour_temperature_c{};
