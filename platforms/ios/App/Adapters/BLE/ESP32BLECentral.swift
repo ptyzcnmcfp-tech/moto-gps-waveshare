@@ -207,6 +207,7 @@ final class ESP32BLECentral: NSObject {
     private static let writeWithoutResponsePacingMs: UInt64 = 15
     private static let mapSceneCapability: UInt32 = 1 << 7
     private static let displaySettingsCapability: UInt32 = 1 << 8
+    private static let weatherSnapshotCapability: UInt32 = 1 << 9
 
     private struct RouteGeometrySignature: Equatable {
         let routeID: String
@@ -238,6 +239,7 @@ final class ESP32BLECentral: NSObject {
     private var pendingNavigationState: MotoNavCoreSnapshot?
     private var pendingMediaState: PhoneMediaState?
     private var pendingDisplaySettings: PendingDisplaySettings?
+    private var pendingWeatherSnapshot: MotoBLEWeatherSnapshotInput?
     private var pendingMapScene: OfflineMapSceneWindow?
     private var mapSceneDelivery = BLEMapSceneDelivery()
     private var mapSceneFinalFrame: Data?
@@ -352,6 +354,13 @@ final class ESP32BLECentral: NSObject {
     func sendMapScene(_ scene: OfflineMapSceneWindow) {
         pendingMapScene = scene
         flushPendingMapScene()
+    }
+
+    /// Retains the latest weather snapshot for the circular display.  The phone
+    /// itself does not render this projection; the BLE bridge owns wire layout.
+    func sendWeatherSnapshot(_ weather: MotoBLEWeatherSnapshotInput) {
+        pendingWeatherSnapshot = weather
+        flushPendingWeatherSnapshot()
     }
 
     private func startScan() {
@@ -608,6 +617,7 @@ final class ESP32BLECentral: NSObject {
                 }
                 flushPendingMediaState()
                 flushPendingDisplaySettings()
+                flushPendingWeatherSnapshot()
                 flushPendingMapScene()
             }
         } catch {
@@ -909,6 +919,20 @@ final class ESP32BLECentral: NSObject {
 
         do {
             try send(codec.encodeDisplaySettings(makeDisplaySettingsInput(settings)))
+        } catch {
+            recoverFromTransportError(error.localizedDescription)
+        }
+    }
+
+    private func flushPendingWeatherSnapshot() {
+        guard protocolReady,
+              peerCapabilities & Self.weatherSnapshotCapability != 0,
+              let codec,
+              let weather = pendingWeatherSnapshot
+        else { return }
+
+        do {
+            try send(codec.encodeWeatherSnapshot(weather))
         } catch {
             recoverFromTransportError(error.localizedDescription)
         }

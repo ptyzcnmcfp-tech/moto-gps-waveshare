@@ -17,6 +17,8 @@ constexpr std::size_t kMaxMediaSourceBytes = 31;
 constexpr std::size_t kMaxTrackTitleBytes = 63;
 constexpr std::size_t kMaxArtistNameBytes = 47;
 constexpr std::int64_t kMaxMapSceneCoordinateDeltaE6 = 100'000;
+constexpr std::int8_t kWeatherMinTemperatureC = -40;
+constexpr std::int8_t kWeatherMaxTemperatureC = 60;
 
 class Writer {
  public:
@@ -495,6 +497,48 @@ Error validate(const DisplaySettings& value) {
   return Error::None;
 }
 
+Error validate(const WeatherSnapshot& value) {
+  if (value.hour_count > kWeatherHourCapacity ||
+      value.day_count > kWeatherDayCapacity) {
+    return Error::TooManyItems;
+  }
+  if (value.current_precipitation_probability > 100U) {
+    return Error::OutOfRange;
+  }
+  if (value.current_temperature_c < kWeatherMinTemperatureC ||
+      value.current_temperature_c > kWeatherMaxTemperatureC) {
+    return Error::OutOfRange;
+  }
+  for (std::size_t index = 0; index < kWeatherHourCapacity; ++index) {
+    if (index < value.hour_count) {
+      if (value.hour_precipitation_probability[index] > 100U) {
+        return Error::OutOfRange;
+      }
+      if (value.hour_temperature_c[index] < kWeatherMinTemperatureC ||
+          value.hour_temperature_c[index] > kWeatherMaxTemperatureC) {
+        return Error::OutOfRange;
+      }
+    }
+  }
+  for (std::size_t index = 0; index < kWeatherDayCapacity; ++index) {
+    if (index < value.day_count) {
+      if (value.day_precipitation_probability[index] > 100U ||
+          value.day_high_temperature_c[index] < kWeatherMinTemperatureC ||
+          value.day_high_temperature_c[index] > kWeatherMaxTemperatureC ||
+          value.day_low_temperature_c[index] < kWeatherMinTemperatureC ||
+          value.day_low_temperature_c[index] > kWeatherMaxTemperatureC) {
+        return Error::OutOfRange;
+      }
+      const auto& label = value.day_label[index];
+      const auto null_position = std::find(label.begin(), label.end(), '\0');
+      if (null_position == label.end()) {
+        return Error::OutOfRange;
+      }
+    }
+  }
+  return Error::None;
+}
+
 Error validate(const DeviceCommand& value) {
   if (!valid_command_kind(value.kind) || !valid_display_page(value.page)) {
     return Error::InvalidEnum;
@@ -635,6 +679,25 @@ BytesResult encode_payload(const T& value) {
     writer.u8(value.heading_sensitivity);
     writer.u8(value.volume_percent);
     writer.u8(value.sound_enabled);
+  } else if constexpr (std::is_same_v<T, WeatherSnapshot>) {
+    writer.u8(static_cast<std::uint8_t>(value.current_temperature_c));
+    writer.u8(value.current_precipitation_probability);
+    writer.u8(value.current_weather_code);
+    writer.u8(value.hour_count);
+    for (std::size_t index = 0; index < kWeatherHourCapacity; ++index) {
+      writer.u8(value.hour_precipitation_probability[index]);
+      writer.u8(static_cast<std::uint8_t>(value.hour_temperature_c[index]));
+    }
+    writer.u8(value.day_count);
+    for (std::size_t index = 0; index < kWeatherDayCapacity; ++index) {
+      for (std::size_t byte = 0; byte < kWeatherDayLabelBytes; ++byte) {
+        writer.u8(static_cast<std::uint8_t>(value.day_label[index][byte]));
+      }
+      writer.u8(static_cast<std::uint8_t>(value.day_high_temperature_c[index]));
+      writer.u8(static_cast<std::uint8_t>(value.day_low_temperature_c[index]));
+      writer.u8(value.day_precipitation_probability[index]);
+      writer.u8(value.day_weather_code[index]);
+    }
   } else if constexpr (std::is_same_v<T, DeviceCommand>) {
     writer.u8(static_cast<std::uint8_t>(value.kind));
     writer.u16(value.command_id);
@@ -927,6 +990,33 @@ MessageResult decode_display_settings(ByteView payload) {
     value.heading_sensitivity = reader.u8();
     value.volume_percent = reader.u8();
     value.sound_enabled = reader.u8();
+    reader.require_end();
+  }
+  return decoded_result(std::move(value), reader);
+}
+
+MessageResult decode_weather_snapshot(ByteView payload) {
+  Reader reader(payload);
+  WeatherSnapshot value;
+  if (begin_payload(reader)) {
+    value.current_temperature_c = static_cast<std::int8_t>(reader.u8());
+    value.current_precipitation_probability = reader.u8();
+    value.current_weather_code = reader.u8();
+    value.hour_count = reader.u8();
+    for (std::size_t index = 0; index < kWeatherHourCapacity; ++index) {
+      value.hour_precipitation_probability[index] = reader.u8();
+      value.hour_temperature_c[index] = static_cast<std::int8_t>(reader.u8());
+    }
+    value.day_count = reader.u8();
+    for (std::size_t index = 0; index < kWeatherDayCapacity; ++index) {
+      for (std::size_t byte = 0; byte < kWeatherDayLabelBytes; ++byte) {
+        value.day_label[index][byte] = static_cast<char>(reader.u8());
+      }
+      value.day_high_temperature_c[index] = static_cast<std::int8_t>(reader.u8());
+      value.day_low_temperature_c[index] = static_cast<std::int8_t>(reader.u8());
+      value.day_precipitation_probability[index] = reader.u8();
+      value.day_weather_code[index] = reader.u8();
+    }
     reader.require_end();
   }
   return decoded_result(std::move(value), reader);
@@ -1499,6 +1589,22 @@ bool DisplaySettings::operator==(const DisplaySettings& rhs) const noexcept {
                   rhs.sound_enabled);
 }
 
+bool WeatherSnapshot::operator==(const WeatherSnapshot& rhs) const noexcept {
+  return std::tie(current_temperature_c, current_precipitation_probability,
+                   current_weather_code, hour_count,
+                   hour_precipitation_probability, hour_temperature_c,
+                   day_count, day_label, day_high_temperature_c,
+                   day_low_temperature_c, day_precipitation_probability,
+                   day_weather_code) ==
+         std::tie(rhs.current_temperature_c,
+                  rhs.current_precipitation_probability,
+                  rhs.current_weather_code, rhs.hour_count,
+                  rhs.hour_precipitation_probability,
+                  rhs.hour_temperature_c, rhs.day_count, rhs.day_label,
+                  rhs.day_high_temperature_c, rhs.day_low_temperature_c,
+                  rhs.day_precipitation_probability, rhs.day_weather_code);
+}
+
 bool DeviceCommand::operator==(const DeviceCommand& rhs) const noexcept {
   return std::tie(kind, command_id, page, x, y, event_time_ms) ==
          std::tie(rhs.kind, rhs.command_id, rhs.page, rhs.x, rhs.y,
@@ -1527,6 +1633,8 @@ MessageType message_type(const Message& message) noexcept {
           return MessageType::MapScene;
         } else if constexpr (std::is_same_v<T, DisplaySettings>) {
           return MessageType::DisplaySettings;
+        } else if constexpr (std::is_same_v<T, WeatherSnapshot>) {
+          return MessageType::WeatherSnapshot;
         } else {
           return MessageType::DeviceCommand;
         }
@@ -1555,6 +1663,8 @@ MessageResult decode_message(MessageType type, ByteView payload) {
     case MessageType::MapScene: return decode_map_scene(payload);
     case MessageType::DisplaySettings:
       return decode_display_settings(payload);
+    case MessageType::WeatherSnapshot:
+      return decode_weather_snapshot(payload);
     case MessageType::DeviceCommand:
       return decode_device_command(payload);
   }

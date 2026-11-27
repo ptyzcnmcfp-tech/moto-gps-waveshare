@@ -16,7 +16,6 @@ struct ContentView: View {
     @State private var showsMapDownloads = false
     @State private var showsDataUse = false
     @State private var showsGatewaySettings = false
-    @State private var showsWeather = false
 
     var body: some View {
         NavigationStack(path: navigationPath) {
@@ -46,7 +45,6 @@ struct ContentView: View {
             )
         }
         .sheet(isPresented: $showsDataUse) { DataUseView() }
-        .sheet(isPresented: $showsWeather) { WeatherView(model: model) }
         .sheet(isPresented: $showsGatewaySettings) { GatewaySettingsView(model: model) }
     }
 
@@ -106,7 +104,6 @@ struct ContentView: View {
                 }
                 Section {
                     deviceSummaryButton
-                    weatherButton
                     mapDownloadsButton
                     demoButton
                 } footer: {
@@ -611,42 +608,6 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .accessibilityIdentifier("device-summary-button")
-    }
-
-    private var weatherButton: some View {
-        Button {
-            searchFocused = false
-            showsWeather = true
-        } label: {
-            HStack(spacing: 14) {
-                Image(systemName: "cloud.sun")
-                    .font(.title3)
-                    .foregroundStyle(.blue)
-                    .frame(width: 24)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("天气").foregroundStyle(Color.primary)
-                    Text(weatherButtonDetail)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color(uiColor: .tertiaryLabel))
-                    .accessibilityHidden(true)
-            }
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
-        }
-        .accessibilityIdentifier("weather-button")
-    }
-
-    private var weatherButtonDetail: String {
-        guard let weather = model.weather else {
-            return model.isLoadingWeather ? "获取中" : "7 天预报与降水概率"
-        }
-        return "\(Int(round(weather.currentTemperature)))° · 降水 \(weather.currentPrecipitationProbability)%"
     }
 
     private var deviceDetails: some View {

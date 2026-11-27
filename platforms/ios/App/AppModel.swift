@@ -39,13 +39,13 @@ final class AppModel: ObservableObject {
     private var placeProvider: AmapGatewayPlaceProvider
     private let mediaController = AppleMusicRemoteController()
     private let weatherService = OpenMeteoWeatherService()
-    private var weatherTask: Task<Void, Never>?
+    private var weatherRefreshTask: Task<Void, Never>?
+    private var latestWeather: WeatherForecast?
+    private var arrivalStopTask: Task<Void, Never>?
+    private var arrivalStopHandled = false
     let surroundingMap: SurroundingMapStore
     @Published private(set) var mapGatewayBaseURL: URL
     @Published var displaySettings: DisplaySettingsState
-    @Published private(set) var weather: WeatherForecast?
-    @Published private(set) var isLoadingWeather = false
-    @Published private(set) var weatherFailure: String?
     @Published private(set) var isUpdatingGateway = false
     private var runtime: SharedNavigationRuntime?
     private var placeSearchTask: Task<Void, Never>?
@@ -96,7 +96,7 @@ final class AppModel: ObservableObject {
         }
         searchLocation.onLocationChange = { [weak self] point in
             guard let self else { return }
-            if point != nil, self.weather == nil {
+            if point != nil, self.latestWeather == nil {
                 self.refreshWeather()
             }
             let query = self.destinationQuery.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -149,6 +149,8 @@ final class AppModel: ObservableObject {
     deinit {
         placeSearchTask?.cancel()
         routePreviewTask?.cancel()
+        weatherRefreshTask?.cancel()
+        arrivalStopTask?.cancel()
     }
 
     var isGatewayConfigured: Bool {
@@ -191,37 +193,69 @@ final class AppModel: ObservableObject {
     }
 
     func refreshWeather() {
-        weatherTask?.cancel()
-        let point = searchLocation.latestPoint
-        isLoadingWeather = true
-        weatherFailure = nil
-        weatherTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let forecast = try await self.weatherService.fetchForecast(for: point)
-                guard !Task.isCancelled else { return }
-                self.weather = forecast
-                self.isLoadingWeather = false
-            } catch {
-                guard !Task.isCancelled else { return }
-                self.isLoadingWeather = false
-                self.weatherFailure = Self.weatherMessage(for: error)
+        weatherRefreshTask?.cancel()
+        weatherRefreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                do {
+                    let forecast = try await self.weatherService.fetchForecast(
+                        for: self.searchLocation.latestPoint)
+                    guard !Task.isCancelled else { return }
+                    self.latestWeather = forecast
+                    self.bluetooth.sendWeatherSnapshot(
+                        self.makeWeatherSnapshotInput(forecast))
+                } catch {
+                    // The phone does not display weather. Keep the last valid
+                    // snapshot on the round display and retry on the hourly cycle.
+                }
+                try? await Task.sleep(for: .seconds(3_600))
             }
         }
     }
 
-    private static func weatherMessage(for error: Error) -> String {
-        guard let weatherError = error as? WeatherServiceError else {
-            return "天气暂时无法加载，请稍后重试"
+    private func makeWeatherSnapshotInput(
+        _ forecast: WeatherForecast
+    ) -> MotoBLEWeatherSnapshotInput {
+        let input = MotoBLEWeatherSnapshotInput()
+        input.currentTemperatureC = Self.clampedTemperature(forecast.currentTemperature)
+        input.currentPrecipitationProbability =
+            Self.clampedProbability(forecast.currentPrecipitationProbability)
+        input.currentWeatherCode = Self.clampedWeatherCode(forecast.currentWeatherCode)
+
+        let hours = forecast.next24Hours.prefix(4).map { hour in
+            let item = MotoBLEWeatherHourInput()
+            item.precipitationProbability =
+                Self.clampedProbability(hour.precipitationProbability)
+            item.temperatureC = Self.clampedTemperature(hour.temperature)
+            return item
         }
-        switch weatherError {
-        case .missingLocation:
-            return "需要当前位置才能查看天气，请在系统设置中允许定位"
-        case .invalidResponse:
-            return "天气数据格式不正确，请稍后重试"
-        case .networkFailure(let message):
-            return "网络异常：\(message)"
+        input.hours = Array(hours)
+
+        let days = forecast.next7Days.prefix(2).map { day in
+            let item = MotoBLEWeatherDayInput()
+            item.label = day.dayLabel
+            item.highTemperatureC = Self.clampedTemperature(day.highTemperature)
+            item.lowTemperatureC = Self.clampedTemperature(day.lowTemperature)
+            item.precipitationProbability =
+                Self.clampedProbability(day.precipitationProbability)
+            item.weatherCode = Self.clampedWeatherCode(day.weatherCode)
+            return item
         }
+        input.days = Array(days)
+        return input
+    }
+
+    private static func clampedTemperature(_ value: Double) -> Int8 {
+        let limited = min(max(value, -40), 60)
+        return Int8(clamping: Int(round(limited)))
+    }
+
+    private static func clampedProbability(_ value: Int) -> UInt8 {
+        UInt8(clamping: min(max(value, 0), 100))
+    }
+
+    private static func clampedWeatherCode(_ value: Int) -> UInt8 {
+        UInt8(clamping: min(max(value, 0), 255))
     }
 
     var deviceReady: Bool {
@@ -406,6 +440,7 @@ final class AppModel: ObservableObject {
         routePreviewTask?.cancel()
         routePreviewTask = nil
         surroundingMap.reset()
+        resetArrivalStop()
         runtime?.stop()
         let runtime = SharedNavigationRuntime(
             locationSource: liveLocation,
@@ -432,6 +467,7 @@ final class AppModel: ObservableObject {
     func startDemoNavigation() {
         guard !isNavigationActive, !isUpdatingGateway else { return }
         surroundingMap.reset()
+        resetArrivalStop()
         runtime?.stop()
         let demoSession = DemoNavigationSession()
         let runtime = SharedNavigationRuntime(
@@ -457,6 +493,7 @@ final class AppModel: ObservableObject {
     }
 
     func stopNavigation() {
+        resetArrivalStop()
         runtime?.stop()
         runtime = nil
         isNavigationActive = false
@@ -508,6 +545,26 @@ final class AppModel: ObservableObject {
         bluetooth.toggleConnection()
     }
 
+    private func resetArrivalStop() {
+        arrivalStopTask?.cancel()
+        arrivalStopTask = nil
+        arrivalStopHandled = false
+    }
+
+    private func scheduleArrivalStopIfNeeded() {
+        guard isNavigationActive, !isDemoActive, !arrivalStopHandled else { return }
+        arrivalStopHandled = true
+        arrivalStopTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self,
+                  self.isNavigationActive,
+                  !self.isDemoActive,
+                  self.navigation.stateName == "arrived"
+            else { return }
+            self.stopNavigation()
+        }
+    }
+
     private func bind(_ runtime: SharedNavigationRuntime) {
         runtime.onSnapshot = { [weak self] snapshot in
             self?.navigation = snapshot
@@ -515,6 +572,9 @@ final class AppModel: ObservableObject {
                 self?.navigationFailure = nil
             }
             self?.bluetooth.sendNavigationSnapshot(snapshot)
+            if snapshot.stateName == "arrived" {
+                self?.scheduleArrivalStopIfNeeded()
+            }
             if snapshot.hasRouteView {
                 self?.surroundingMap.update(
                     latitudeDeg: snapshot.routeViewOriginLatitudeDeg,

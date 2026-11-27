@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -187,6 +188,43 @@ moto::ble::MapBuildingClass MapBuildingClassFromName(NSString *name) {
   if ([name isEqualToString:@"landmark"]) return moto::ble::MapBuildingClass::Landmark;
   if ([name isEqualToString:@"parking"]) return moto::ble::MapBuildingClass::Parking;
   return moto::ble::MapBuildingClass::Generic;
+}
+
+moto::ble::WeatherSnapshot WeatherSnapshotFromInput(
+    MotoBLEWeatherSnapshotInput *input) {
+  moto::ble::WeatherSnapshot weather;
+  weather.current_temperature_c = input.currentTemperatureC;
+  weather.current_precipitation_probability =
+      input.currentPrecipitationProbability;
+  weather.current_weather_code = input.currentWeatherCode;
+
+  weather.hour_count = static_cast<std::uint8_t>(
+      std::min<NSUInteger>(input.hours.count,
+                           moto::ble::kWeatherHourCapacity));
+  for (std::uint8_t index = 0; index < weather.hour_count; ++index) {
+    MotoBLEWeatherHourInput *hour = input.hours[index];
+    weather.hour_precipitation_probability[index] =
+        hour.precipitationProbability;
+    weather.hour_temperature_c[index] = hour.temperatureC;
+  }
+
+  weather.day_count = static_cast<std::uint8_t>(
+      std::min<NSUInteger>(input.days.count,
+                           moto::ble::kWeatherDayCapacity));
+  for (std::uint8_t index = 0; index < weather.day_count; ++index) {
+    MotoBLEWeatherDayInput *day = input.days[index];
+    const std::string label = Utf8Prefix(day.label, 7);
+    std::memset(weather.day_label[index].data(), 0,
+                moto::ble::kWeatherDayLabelBytes);
+    std::memcpy(weather.day_label[index].data(), label.data(),
+                label.size());
+    weather.day_high_temperature_c[index] = day.highTemperatureC;
+    weather.day_low_temperature_c[index] = day.lowTemperatureC;
+    weather.day_precipitation_probability[index] =
+        day.precipitationProbability;
+    weather.day_weather_code[index] = day.weatherCode;
+  }
+  return weather;
 }
 
 moto::ble::MapScene MapSceneFromInput(MotoBLEMapSceneInput *input) {
@@ -548,6 +586,15 @@ moto::ble::ConnectionStatus PhoneConnectionStatus(
   return EncodeMessage(storage,
                        moto::ble::Message{MapSceneFromInput(input)},
                        moto::ble::AckRequested, error);
+}
+
+- (NSArray<NSData *> *)encodeWeatherSnapshot:
+    (MotoBLEWeatherSnapshotInput *)input
+                                       error:(NSError **)error {
+  auto *storage = static_cast<CodecStorage *>(_storage);
+  return EncodeMessage(storage,
+                       moto::ble::Message{WeatherSnapshotFromInput(input)},
+                       0, error);
 }
 
 - (NSData *)encodeMapScenePayloadForTesting:(MotoBLEMapSceneInput *)input

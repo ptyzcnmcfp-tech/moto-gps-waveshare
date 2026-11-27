@@ -84,6 +84,27 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, copy) NSArray<MotoBLEMapBuildingInput *> *buildings;
 @end
 
+@interface MotoBLEWeatherHourInput : NSObject
+@property(nonatomic) uint8_t precipitationProbability;
+@property(nonatomic) int8_t temperatureC;
+@end
+
+@interface MotoBLEWeatherDayInput : NSObject
+@property(nonatomic, copy) NSString *label;
+@property(nonatomic) int8_t highTemperatureC;
+@property(nonatomic) int8_t lowTemperatureC;
+@property(nonatomic) uint8_t precipitationProbability;
+@property(nonatomic) uint8_t weatherCode;
+@end
+
+@interface MotoBLEWeatherSnapshotInput : NSObject
+@property(nonatomic) int8_t currentTemperatureC;
+@property(nonatomic) uint8_t currentPrecipitationProbability;
+@property(nonatomic) uint8_t currentWeatherCode;
+@property(nonatomic, copy) NSArray<MotoBLEWeatherHourInput *> *hours;
+@property(nonatomic, copy) NSArray<MotoBLEWeatherDayInput *> *days;
+@end
+
 @interface MotoBLEDeviceCommand : NSObject
 @property(nonatomic, readonly) uint16_t sequence;
 @property(nonatomic, readonly) BOOL ackRequested;
@@ -176,6 +197,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (nullable NSArray<NSData *> *)encodeMapScene:(MotoBLEMapSceneInput *)scene
                                           error:(NSError **)error;
+
+- (nullable NSArray<NSData *> *)encodeWeatherSnapshot:(MotoBLEWeatherSnapshotInput *)weather
+                                                error:(NSError **)error;
 
 /// Test hook for checking the shared MapScene payload without duplicating its
 /// binary layout in Swift.

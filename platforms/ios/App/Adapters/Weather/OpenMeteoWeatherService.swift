@@ -134,9 +134,27 @@ final class OpenMeteoWeatherService: @unchecked Sendable {
         let probabilities = hourly.precipitation_probability ?? []
         let temperatures = hourly.temperature_2m ?? []
         let codes = hourly.weather_code ?? []
+
+        let timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let now = Date()
+        let currentHour = calendar.date(
+            bySettingHour: calendar.component(.hour, of: now),
+            minute: 0,
+            second: 0,
+            of: now) ?? now
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "zh_CN")
+        parser.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        parser.timeZone = timeZone
+
         return times.enumerated().compactMap { index, time in
             guard index < temperatures.count,
-                  let temperature = temperatures[index] else { return nil }
+                  let temperature = temperatures[index],
+                  let hourDate = parser.date(from: time),
+                  hourDate >= currentHour
+            else { return nil }
             let probability = index < probabilities.count ? (probabilities[index] ?? 0) : 0
             let code = index < codes.count ? (codes[index] ?? 0) : 0
             return WeatherHourForecast(

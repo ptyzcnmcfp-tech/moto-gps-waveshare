@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -117,6 +118,7 @@ enum class MessageType : std::uint8_t {
   MediaState = 0x13,
   MapScene = 0x14,
   DisplaySettings = 0x15,
+  WeatherSnapshot = 0x16,
   DeviceCommand = 0x20,
 };
 
@@ -275,6 +277,7 @@ enum Capability : std::uint32_t {
   CapabilityCommandAck = 1U << 6U,
   CapabilityMapScene = 1U << 7U,
   CapabilityDisplaySettings = 1U << 8U,
+  CapabilityWeatherSnapshot = 1U << 9U,
 };
 
 struct ConnectionStatus {
@@ -552,6 +555,29 @@ struct DisplaySettings {
   bool operator==(const DisplaySettings& rhs) const noexcept;
 };
 
+constexpr std::size_t kWeatherHourCapacity = 4;
+constexpr std::size_t kWeatherDayCapacity = 2;
+constexpr std::size_t kWeatherDayLabelBytes = 8;
+
+struct WeatherSnapshot {
+  std::int8_t current_temperature_c = 0;
+  std::uint8_t current_precipitation_probability = 0;
+  std::uint8_t current_weather_code = 0;
+  std::uint8_t hour_count = 0;
+  std::array<std::uint8_t, kWeatherHourCapacity>
+      hour_precipitation_probability{};
+  std::array<std::int8_t, kWeatherHourCapacity> hour_temperature_c{};
+  std::uint8_t day_count = 0;
+  std::array<std::array<char, kWeatherDayLabelBytes>, kWeatherDayCapacity>
+      day_label{};
+  std::array<std::int8_t, kWeatherDayCapacity> day_high_temperature_c{};
+  std::array<std::int8_t, kWeatherDayCapacity> day_low_temperature_c{};
+  std::array<std::uint8_t, kWeatherDayCapacity> day_precipitation_probability{};
+  std::array<std::uint8_t, kWeatherDayCapacity> day_weather_code{};
+
+  bool operator==(const WeatherSnapshot& rhs) const noexcept;
+};
+
 enum class DeviceCommandKind : std::uint8_t {
   PageSelected = 0,
   Tap = 1,
@@ -588,6 +614,7 @@ using Message = std::variant<ConnectionStatus,
                              MediaState,
                              MapScene,
                              DisplaySettings,
+                             WeatherSnapshot,
                              DeviceCommand>;
 
 using MessageResult = Result<Message>;
