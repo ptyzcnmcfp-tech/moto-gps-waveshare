@@ -1,4 +1,5 @@
 import Combine
+import CoreLocation
 import Foundation
 import MotoNavigationCore
 
@@ -41,6 +42,10 @@ final class AppModel: ObservableObject {
     private let weatherService = OpenMeteoWeatherService()
     private var weatherRefreshTask: Task<Void, Never>?
     private var latestWeather: WeatherForecast?
+    // Reverse-geocoded captions for the round display's weather header.
+    private var weatherPlaceCity = ""
+    private var weatherPlaceDistrict = ""
+    private var weatherPlaceResolvedAt: Date?
     private var lastWeatherRefreshAt = Date.distantPast
     private var wasDeviceConnected = false
     private var arrivalStopTask: Task<Void, Never>?
@@ -232,6 +237,8 @@ final class AppModel: ObservableObject {
                     consecutiveFailures = 0
                     self.latestWeather = forecast
                     self.lastWeatherRefreshAt = Date()
+                    await self.resolveWeatherPlace()
+                    guard !Task.isCancelled else { return }
                     self.bluetooth.sendWeatherSnapshot(
                         self.makeWeatherSnapshotInput(forecast))
                     try? await Task.sleep(for: .seconds(900))
@@ -248,6 +255,38 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func resolveWeatherPlace() async {
+        guard let point = searchLocation.latestPoint else { return }
+        if let last = weatherPlaceResolvedAt,
+           Date().timeIntervalSince(last) < 10 * 60,
+           !weatherPlaceCity.isEmpty || !weatherPlaceDistrict.isEmpty {
+            return
+        }
+        let location = CLLocation(latitude: point.latitudeDeg,
+                                  longitude: point.longitudeDeg)
+        guard let placemark = try? await CLGeocoder()
+            .reverseGeocodeLocation(location).first else {
+            return
+        }
+        let city = placemark.locality
+            ?? placemark.administrativeArea
+            ?? placemark.name
+            ?? ""
+        let district = placemark.subLocality
+            ?? placemark.subAdministrativeArea
+            ?? ""
+        weatherPlaceResolvedAt = Date()
+        guard city != weatherPlaceCity || district != weatherPlaceDistrict else {
+            return
+        }
+        weatherPlaceCity = city
+        weatherPlaceDistrict = district
+        // Push the captions immediately; the regular weather frame follows.
+        if let forecast = latestWeather {
+            bluetooth.sendWeatherSnapshot(makeWeatherSnapshotInput(forecast))
+        }
+    }
+
     private func makeWeatherSnapshotInput(
         _ forecast: WeatherForecast
     ) -> MotoBLEWeatherSnapshotInput {
@@ -256,6 +295,8 @@ final class AppModel: ObservableObject {
         input.currentPrecipitationProbability =
             Self.clampedProbability(forecast.currentPrecipitationProbability)
         input.currentWeatherCode = Self.clampedWeatherCode(forecast.currentWeatherCode)
+        input.cityLabel = weatherPlaceCity
+        input.districtLabel = weatherPlaceDistrict
 
         let hours = forecast.next24Hours.prefix(4).map { hour in
             let item = MotoBLEWeatherHourInput()
@@ -268,8 +309,8 @@ final class AppModel: ObservableObject {
         }
         input.hours = Array(hours)
 
-        // The round display's "未来2天" shows today and tomorrow.
-        let days = forecast.next7Days.prefix(2).map { day in
+        // The round display's "未来2天" starts tomorrow (今天+1, 今天+2).
+        let days = forecast.next7Days.dropFirst().prefix(2).map { day in
             let item = MotoBLEWeatherDayInput()
             item.label = day.dayLabel
             item.highTemperatureC = Self.clampedTemperature(day.highTemperature)

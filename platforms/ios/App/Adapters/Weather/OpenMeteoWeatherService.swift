@@ -197,13 +197,14 @@ final class OpenMeteoWeatherService: @unchecked Sendable {
 
     private static func dayLabel(from dateString: String, index: Int) -> String {
         if index == 0 { return "今天" }
-        if index == 1 { return "明天" }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy-MM-dd"
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
         guard let date = formatter.date(from: dateString) else { return dateString }
-        formatter.dateFormat = "M月d日"
+        // The round display's two forecast rows show bare day numbers
+        // ("28日", "29日") rather than month + day.
+        formatter.dateFormat = "d日"
         return formatter.string(from: date)
     }
 }

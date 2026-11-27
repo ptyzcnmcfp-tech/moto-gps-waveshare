@@ -103,6 +103,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic) int8_t currentTemperatureC;
 @property(nonatomic) uint8_t currentPrecipitationProbability;
 @property(nonatomic) uint8_t currentWeatherCode;
+@property(nonatomic, copy) NSString *cityLabel;
+@property(nonatomic, copy) NSString *districtLabel;
 @property(nonatomic, copy) NSArray<MotoBLEWeatherHourInput *> *hours;
 @property(nonatomic, copy) NSArray<MotoBLEWeatherDayInput *> *days;
 @end

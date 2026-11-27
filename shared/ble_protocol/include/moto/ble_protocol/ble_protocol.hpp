@@ -561,11 +561,16 @@ constexpr std::size_t kWeatherHourCapacity = 4;
 constexpr std::size_t kWeatherDayCapacity = 2;
 constexpr std::size_t kWeatherDayLabelBytes = 16;
 constexpr std::size_t kWeatherHourLabelBytes = 6;
+// UTF-8 place names shown at the top of the round display's weather page.
+constexpr std::size_t kWeatherPlaceBytes = 24;
 
 struct WeatherSnapshot {
   std::int8_t current_temperature_c = 0;
   std::uint8_t current_precipitation_probability = 0;
   std::uint8_t current_weather_code = 0;
+  // City (left) and district (right) captions for the weather page header.
+  std::array<char, kWeatherPlaceBytes> city_label{};
+  std::array<char, kWeatherPlaceBytes> district_label{};
   std::uint8_t hour_count = 0;
   std::array<std::array<char, kWeatherHourLabelBytes>, kWeatherHourCapacity>
       hour_label{};

@@ -509,6 +509,11 @@ Error validate(const WeatherSnapshot& value) {
       value.current_temperature_c > kWeatherMaxTemperatureC) {
     return Error::OutOfRange;
   }
+  for (const auto* label : {&value.city_label, &value.district_label}) {
+    if (std::find(label->begin(), label->end(), '\0') == label->end()) {
+      return Error::OutOfRange;
+    }
+  }
   for (std::size_t index = 0; index < kWeatherHourCapacity; ++index) {
     if (index < value.hour_count) {
       const auto& label = value.hour_label[index];
@@ -700,6 +705,12 @@ BytesResult encode_payload(const T& value) {
     writer.u8(static_cast<std::uint8_t>(value.current_temperature_c));
     writer.u8(value.current_precipitation_probability);
     writer.u8(value.current_weather_code);
+    for (std::size_t byte = 0; byte < kWeatherPlaceBytes; ++byte) {
+      writer.u8(static_cast<std::uint8_t>(value.city_label[byte]));
+    }
+    for (std::size_t byte = 0; byte < kWeatherPlaceBytes; ++byte) {
+      writer.u8(static_cast<std::uint8_t>(value.district_label[byte]));
+    }
     writer.u8(value.hour_count);
     for (std::size_t index = 0; index < kWeatherHourCapacity; ++index) {
       for (std::size_t byte = 0; byte < kWeatherHourLabelBytes; ++byte) {
@@ -1027,6 +1038,17 @@ MessageResult decode_weather_snapshot(ByteView payload) {
     value.current_temperature_c = static_cast<std::int8_t>(reader.u8());
     value.current_precipitation_probability = reader.u8();
     value.current_weather_code = reader.u8();
+    // Earlier sender builds omitted the place captions. The remaining tail
+    // (counts, hour slots and day slots) is fixed at 78 bytes, so only treat
+    // the extra bytes as captions when the whole tail is present.
+    if (reader.remaining() >= 2 * kWeatherPlaceBytes + 78) {
+      for (std::size_t byte = 0; byte < kWeatherPlaceBytes; ++byte) {
+        value.city_label[byte] = static_cast<char>(reader.u8());
+      }
+      for (std::size_t byte = 0; byte < kWeatherPlaceBytes; ++byte) {
+        value.district_label[byte] = static_cast<char>(reader.u8());
+      }
+    }
     value.hour_count = reader.u8();
     for (std::size_t index = 0; index < kWeatherHourCapacity; ++index) {
       for (std::size_t byte = 0; byte < kWeatherHourLabelBytes; ++byte) {
@@ -1632,14 +1654,15 @@ bool DisplaySettings::operator==(const DisplaySettings& rhs) const noexcept {
 
 bool WeatherSnapshot::operator==(const WeatherSnapshot& rhs) const noexcept {
   return std::tie(current_temperature_c, current_precipitation_probability,
-                   current_weather_code, hour_count, hour_label,
-                   hour_precipitation_probability, hour_temperature_c,
-                   hour_weather_code, day_count, day_label, day_high_temperature_c,
-                   day_low_temperature_c, day_precipitation_probability,
-                   day_weather_code) ==
+                   current_weather_code, city_label, district_label, hour_count,
+                   hour_label, hour_precipitation_probability,
+                   hour_temperature_c, hour_weather_code, day_count, day_label,
+                   day_high_temperature_c, day_low_temperature_c,
+                   day_precipitation_probability, day_weather_code) ==
          std::tie(rhs.current_temperature_c,
                   rhs.current_precipitation_probability,
-                  rhs.current_weather_code, rhs.hour_count, rhs.hour_label,
+                  rhs.current_weather_code, rhs.city_label,
+                  rhs.district_label, rhs.hour_count, rhs.hour_label,
                   rhs.hour_precipitation_probability,
                   rhs.hour_temperature_c, rhs.hour_weather_code,
                   rhs.day_count, rhs.day_label,

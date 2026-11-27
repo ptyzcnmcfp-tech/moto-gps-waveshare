@@ -198,6 +198,17 @@ moto::ble::WeatherSnapshot WeatherSnapshotFromInput(
       input.currentPrecipitationProbability;
   weather.current_weather_code = input.currentWeatherCode;
 
+  const std::string city = Utf8Prefix(input.cityLabel,
+                                      moto::ble::kWeatherPlaceBytes - 1);
+  std::memset(weather.city_label.data(), 0, moto::ble::kWeatherPlaceBytes);
+  std::memcpy(weather.city_label.data(), city.data(), city.size());
+  const std::string district = Utf8Prefix(input.districtLabel,
+                                          moto::ble::kWeatherPlaceBytes - 1);
+  std::memset(weather.district_label.data(), 0,
+              moto::ble::kWeatherPlaceBytes);
+  std::memcpy(weather.district_label.data(), district.data(),
+              district.size());
+
   weather.hour_count = static_cast<std::uint8_t>(
       std::min<NSUInteger>(input.hours.count,
                            moto::ble::kWeatherHourCapacity));
