@@ -268,9 +268,8 @@ final class AppModel: ObservableObject {
         }
         input.hours = Array(hours)
 
-        // The round display's "未来2天" means tomorrow and the day after,
-        // not today plus tomorrow.
-        let days = forecast.next7Days.dropFirst().prefix(2).map { day in
+        // The round display's "未来2天" shows today and tomorrow.
+        let days = forecast.next7Days.prefix(2).map { day in
             let item = MotoBLEWeatherDayInput()
             item.label = day.dayLabel
             item.highTemperatureC = Self.clampedTemperature(day.highTemperature)

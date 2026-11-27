@@ -197,6 +197,7 @@ final class OpenMeteoWeatherService: @unchecked Sendable {
 
     private static func dayLabel(from dateString: String, index: Int) -> String {
         if index == 0 { return "今天" }
+        if index == 1 { return "明天" }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy-MM-dd"

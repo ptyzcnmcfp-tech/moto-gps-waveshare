@@ -209,7 +209,7 @@ final class ESP32BLECentral: NSObject {
     private static let displaySettingsCapability: UInt32 = 1 << 8
     private static let weatherSnapshotCapability: UInt32 = 1 << 9
     private static let timeSyncCapability: UInt32 = 1 << 10
-    private static let timeSyncIntervalMs: UInt64 = 60_000
+    private static let timeSyncIntervalMs: UInt64 = 30_000
 
     private struct RouteGeometrySignature: Equatable {
         let routeID: String
@@ -638,6 +638,17 @@ final class ESP32BLECentral: NSObject {
                 lastTimeSyncAtMs = 0
                 if sendTimeSync() {
                     lastTimeSyncAtMs = Self.monotonicMs()
+                }
+                // A handshake-completion burst can overflow the outbound queue
+                // (map scene / weather / route geometry all flush here), which
+                // resets queued frames. Re-send the small clock frame once the
+                // burst has drained so the round display is not left at "--:--".
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(2))
+                    guard let self, self.protocolReady else { return }
+                    if self.sendTimeSync() {
+                        self.lastTimeSyncAtMs = Self.monotonicMs()
+                    }
                 }
                 if let pendingNavigationState {
                     sendNavigationSnapshot(pendingNavigationState)
